@@ -1,6 +1,6 @@
 // Claude 대화 기록 → 대화 보기 항목 변환 규칙을 고정한다.
 import { assert, test } from 'orca/testing'
-import { chatSessionId, claudeProjectDir, emptyState, feed, toolDetail } from './transcript'
+import { chatSessionId, claudeProjectDir, emptyState, feed, takeAttachments, toolDetail } from './transcript'
 
 const line = (o: Record<string, unknown>) => `${JSON.stringify(o)}\n`
 const at = '2026-11-13T01:00:00.000Z'
@@ -67,4 +67,13 @@ test('사용자 제목이 자동 제목보다 앞선다', () => {
 test('도구 요약: 파일은 이름만, MCP 는 첫 문자열', () => {
   assert.equal(toolDetail('Read', { file_path: '/a/b/c.ts' }), 'c.ts')
   assert.equal(toolDetail('mcp__x__y', { q: '  찾기  ' }), '찾기')
+})
+
+test('입력창에서 붙인 사진 경로는 사진 수로 바꾸고 지시만 남긴다', () => {
+  const dir = '/var/folders/x/T/pod-attachments'
+  assert.deepEqual(takeAttachments(`${dir}/1-a.png ${dir}/2-b.jpg 이거 봐줘`), { text: '이거 봐줘', count: 2 })
+  assert.deepEqual(takeAttachments(`${dir}/1-a.png`), { text: '', count: 1 })
+  assert.deepEqual(takeAttachments('그냥 /tmp/a.png 경로'), { text: '그냥 /tmp/a.png 경로', count: 0 })
+  const s = feed(emptyState(), JSON.stringify({ type: 'user', timestamp: '2026-11-13T01:00:00.000Z', message: { content: `${dir}/1-a.png 봐줘` } }) + '\n')
+  assert.deepEqual(s.items.map((i) => (i.k === 'user' ? [i.text, i.images] : null)), [['봐줘', 1]])
 })

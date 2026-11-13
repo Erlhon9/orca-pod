@@ -1,7 +1,7 @@
 // 세션의 Claude 대화 기록 파일을 찾아 이어 읽는다. 파일이 자라면 새로 붙은 줄만 읽는다.
 import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { chatSessionId, claudeProjectDir, emptyState, feed, type ChatItem, type TranscriptState } from './transcript'
 
 export interface ConversationQuery {
@@ -12,6 +12,8 @@ export interface ConversationQuery {
   prompt?: string
   /** 세션이 지금 상태로 들어간 시각. 제목으로 못 찾을 때 이보다 오래된 기록은 고르지 않는다. */
   since?: number
+  /** 같은 워크스페이스의 다른 세션 키. 그 세션의 기록은 이 세션 것으로 고르지 않는다. */
+  others?: string[]
 }
 
 export interface Conversation {
@@ -22,7 +24,8 @@ export interface Conversation {
   updatedAt: number
 }
 
-const ROOT = join(homedir(), '.claude', 'projects')
+/** 기록 폴더. 테스트가 HOME 을 바꿔 쓸 수 있게 부를 때마다 구한다. */
+const root = () => join(homedir(), '.claude', 'projects')
 /** 처음 열 때 읽는 최대 크기. 그보다 크면 끝부분만 읽는다. */
 const FIRST_READ = 6 * 1024 * 1024
 const SEND = 240
@@ -56,6 +59,7 @@ const exists = (p: string) =>
 
 /** 대화창(채팅) 세션은 키에 세션 id 가 들어 있다. 폴더를 모르면 전체에서 찾는다. */
 async function byId(id: string, path: string): Promise<string | null> {
+  const ROOT = root()
   const direct = join(ROOT, claudeProjectDir(path), `${id}.jsonl`)
   if (await exists(direct)) return direct
   for (const dir of await readdir(ROOT).catch(() => [] as string[])) {
@@ -65,9 +69,39 @@ async function byId(id: string, path: string): Promise<string | null> {
   return null
 }
 
-/** 터미널 세션: 워크스페이스 폴더의 최근 기록 중 제목(또는 첫 요청)이 맞는 것. 못 찾으면 가장 최근 것. */
-async function byTitle(q: ConversationQuery): Promise<string | null> {
-  const dir = join(ROOT, claudeProjectDir(q.path))
+/**
+ * 제목·요청으로 못 찾았을 때 가장 최근 기록을 쓸지 정한다.
+ * 첫 요청 전 세션은 기록이 아직 없으므로 고르지 않는다(고르면 같은 폴더 다른 세션의 대화가 보인다).
+ * 다른 세션 것으로 알려진 기록, 이 세션보다 오래된 기록도 고르지 않는다.
+ */
+export function pickFallback(
+  recent: { file: string; mtimeMs: number }[],
+  q: Pick<ConversationQuery, 'prompt' | 'since'>,
+  taken: (file: string) => boolean
+): string | null {
+  if (!q.prompt) return null
+  const newest = recent[0]
+  if (!newest || taken(newest.file)) return null
+  if (q.since && newest.mtimeMs < q.since - 60_000) return null
+  return newest.file
+}
+
+/** 다른 세션의 기록인지: 대화창 세션은 키에 세션 id 가 있고, 이미 다른 세션에 짝지은 파일도 있다. */
+function takenBy(q: ConversationQuery): (file: string) => boolean {
+  const ids = new Set((q.others ?? []).map((k) => chatSessionId(k)).filter((x): x is string => !!x))
+  return (file) => {
+    if (ids.has(basename(file, '.jsonl'))) return true
+    for (const [key, hit] of located) if (key !== q.key && hit.file === file) return true
+    return false
+  }
+}
+
+/**
+ * 워크스페이스 폴더의 최근 기록 중 제목(또는 첫 요청)이 맞는 것.
+ * strict 면 맞는 것이 없을 때 최근 기록으로 대신하지 않는다.
+ */
+async function byTitle(q: ConversationQuery, strict = false): Promise<string | null> {
+  const dir = join(root(), claudeProjectDir(q.path))
   const names = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith('.jsonl'))
   const withTime = (
     await Promise.all(names.map(async (n) => ({ file: join(dir, n), st: await exists(join(dir, n)) })))
@@ -75,6 +109,7 @@ async function byTitle(q: ConversationQuery): Promise<string | null> {
   withTime.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)
   const recent = withTime.slice(0, 15)
   if (recent.length === 0) return null
+  const taken = takenBy(q)
   const needles: string[] = []
   if (q.title) {
     const t = JSON.stringify(q.title)
@@ -83,21 +118,26 @@ async function byTitle(q: ConversationQuery): Promise<string | null> {
   if (q.prompt) needles.push(JSON.stringify(q.prompt.slice(0, 60)).slice(0, -1))
   if (needles.length) {
     for (const { file, st } of recent) {
+      if (taken(file)) continue
       const tail = (await readRange(file, Math.max(0, st.size - 768 * 1024), st.size)).toString('utf8')
       if (needles.some((n) => tail.includes(n))) return file
     }
   }
-  // 못 찾았을 때 가장 최근 기록을 쓰되, 이 세션보다 오래된 것이면 다른 세션 대화이므로 쓰지 않는다.
-  const newest = recent[0]
-  if (q.since && newest.st.mtimeMs < q.since - 60_000) return null
-  return newest.file
+  if (strict) return null
+  return pickFallback(
+    recent.map((r) => ({ file: r.file, mtimeMs: r.st.mtimeMs })),
+    q,
+    taken
+  )
 }
 
 async function locate(q: ConversationQuery): Promise<string | null> {
   const hit = located.get(q.key)
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.file
+  // 대화창 세션 키의 id 는 Orca 세션 id 라 Claude 기록 id 와 다를 수 있다(확인: Orca 기록의 providerHandleChain).
+  // 같은 이름 파일이 없으면 제목·첫 요청으로 찾되, 아무 최근 기록으로 대신하지는 않는다.
   const id = chatSessionId(q.key)
-  const file = id ? await byId(id, q.path) : await byTitle(q)
+  const file = id ? ((await byId(id, q.path)) ?? (await byTitle(q, true))) : await byTitle(q)
   if (file) located.set(q.key, { file, at: Date.now() })
   return file
 }
@@ -144,4 +184,12 @@ async function readFile(file: string, none: Conversation): Promise<Conversation>
   }
   cur.mtime = st.mtimeMs
   return { ok: true, items: cur.state.items.slice(-SEND), truncated: cur.truncated || cur.state.items.length > SEND, updatedAt: st.mtimeMs }
+}
+
+/** 세션 id 로 기록을 읽는다(관제처럼 id 를 아는 세션). */
+export async function readSession(id: string, path: string): Promise<Conversation> {
+  const none: Conversation = { ok: false, items: [], truncated: false, updatedAt: 0 }
+  const file = await byId(id, path)
+  if (!file) return none
+  return serial(file, () => readFile(file, none))
 }

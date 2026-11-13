@@ -1,6 +1,7 @@
 // 상세(작업실): 워크스페이스 하나를 열어 두고 에이전트 터미널을 보면서 지시를 보낸다.
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import type { ChatItem } from '../transcript'
+import { attachments } from './attach'
 import { markdown, renderChat, setLinkHandler } from './chat'
 import { closeMenu, hideHover, openMenu } from './overlays'
 import { AGENT_STATE_LABEL, agentName, ago, avatar, duration, fill, h, icon, statusColor, statusLabel, topicColor } from './ui'
@@ -256,7 +257,22 @@ export function createDetail(api: DetailApi) {
   function renderSessionHead(w: WorkspaceView, s: Session): void {
     if (!sessionHead) return
     if (s.kind === 'terminal') {
-      sessionHead.replaceChildren(h('span', { class: 'term' }, icon('terminal')), h('span', { class: 't' }, s.title))
+      fill(
+        sessionHead,
+        h('span', { class: 'term' }, icon(s.setup ? 'gear' : 'terminal')),
+        h('span', { class: 't' }, s.title),
+        s.connected
+          ? h(
+              'button',
+              {
+                class: 'icon-btn',
+                title: 'Orca에서 이 탭 열기',
+                onClick: () => void api.call('pod.focusTerminal', { terminal: s.handle }).then(() => api.toast(`${s.title}(으)로 이동`))
+              },
+              icon('open')
+            )
+          : null
+      )
       return
     }
     const a = s.agent
@@ -416,6 +432,8 @@ export function createDetail(api: DetailApi) {
     const openGroups = new Set<string>()
     let sig = ''
     let first = true
+    let waitingSince = 0
+    let promptAt = 0
     const live = () => ws()?.agents.find((x) => x.key === a.key) ?? a
     let busy = false
     const tick = async () => {
@@ -429,14 +447,28 @@ export function createDetail(api: DetailApi) {
     }
     const tickOnce = async () => {
       const cur = live()
+      const others = (ws()?.agents ?? []).filter((x) => x.key !== a.key).map((x) => x.key)
       let r: { ok: boolean; items: ChatItem[]; truncated: boolean; updatedAt: number }
       try {
-        r = await api.call('pod.conversation', { path: w.path, key: a.key, type: a.type, title: a.title, prompt: a.prompt, since: a.since }, true)
+        r = await api.call('pod.conversation', { path: w.path, key: a.key, type: a.type, title: cur.title, prompt: cur.prompt, since: cur.since, others }, true)
       } catch {
         r = { ok: false, items: [], truncated: false, updatedAt: 0 }
       }
       if (!box.isConnected) return
       if (!r.ok || r.items.length === 0) {
+        // 첫 요청 전이면 기록이 아직 없다. 빈 대화로 두고 계속 읽는다.
+        if (!cur.prompt && handle) {
+          if (!waitingSince) inner.replaceChildren(h('div', { class: 'chat-empty' }, icon('message'), h('div', null, '새 대화')))
+          waitingSince = waitingSince || Date.now()
+          promptAt = 0
+          return
+        }
+        // 요청을 보낸 직후엔 기록이 늦게 생길 수 있다. 잠깐 기다렸다가 그래도 없으면 아래처럼 돌아간다.
+        if (waitingSince) {
+          promptAt = promptAt || Date.now()
+          if (Date.now() - promptAt < 15_000) return
+          waitingSince = 0
+        }
         if (first) {
           noTranscript.add(a.key)
           // 기록이 없으면 터미널 화면(없으면 마지막 요청·답변)으로 돌아간다.
@@ -500,18 +532,31 @@ export function createDetail(api: DetailApi) {
     }
     const send = h('button', { class: 'send', title: '보내기 (⌘Enter)', disabled: true }, icon('send')) as HTMLButtonElement
     const area = h('textarea', { rows: 1, placeholder: '지시 보내기' }) as HTMLTextAreaElement
-    area.addEventListener('input', () => (send.disabled = !area.value.trim()))
+    const composer = h('div', { class: 'composer stack' })
+    const sync = () => (send.disabled = sending || (!area.value.trim() && pics.count() === 0))
+    const pics = attachments(composer, area, { call: (n, i, q) => api.call(n, i, q), toast: (m, k) => api.toast(m, k), onChange: sync })
+    composer.append(pics.tray, h('div', { class: 'composer-row' }, pics.button, area, send))
+    area.addEventListener('input', sync)
+    let sending = false
     const submit = async () => {
-      const body = area.value.trim()
-      if (!body) return
+      if (send.disabled || sending) return
+      sending = true
       send.disabled = true
+      area.readOnly = true
+      pics.lock(true)
       try {
+        const body = await pics.compose(area.value)
         await api.call('pod.send', { terminal: handle, text: body })
         area.value = ''
+        pics.clear()
         stickBottom = true
         refresh()
       } catch {
-        send.disabled = false
+      } finally {
+        sending = false
+        area.readOnly = false
+        pics.lock(false)
+        sync()
       }
     }
     send.addEventListener('click', () => void submit())
@@ -540,7 +585,7 @@ export function createDetail(api: DetailApi) {
       void api.call('pod.interrupt', { terminal: handle }).then(() => api.toast('중단 신호를 보냈습니다'))
     })
     queueMicrotask(() => area.focus())
-    return [h('div', { class: 'keys' }, KEYS.map(key), stop), h('div', { class: 'composer' }, area, send)]
+    return [h('div', { class: 'keys' }, KEYS.map(key), stop), composer]
   }
 
   function update(): void {

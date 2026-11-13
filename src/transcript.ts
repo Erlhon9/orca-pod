@@ -101,10 +101,21 @@ function userText(raw: string, at: number, images: number): ChatItem[] {
   const cmd = COMMAND.exec(raw)
   if (cmd) return [{ k: 'note', text: cmd[1].trim(), at }]
   if (/^<(local-command-stdout|local-command-stderr|bash-stdout|bash-stderr|task-notification)/.test(raw.trim())) return []
-  const text = cleanUserText(raw)
+  const pics = takeAttachments(cleanUserText(raw))
+  const text = pics.text
+  images += pics.count
   if (/^\[Request interrupted by user/.test(text)) return [{ k: 'note', text: '사용자가 중단함', at }]
   if (!text && !images) return []
   return [{ k: 'user', text, at, images }]
+}
+
+/** Pod 입력창에서 붙인 사진은 임시 경로로 지시 앞에 붙는다. 대화 보기에서는 경로 대신 사진 수로 보인다. */
+const ATTACHED = /^(?:\S*\/pod-attachments\/[\w.-]+\.(?:png|jpg|gif|webp)\s*)+/
+
+export function takeAttachments(text: string): { text: string; count: number } {
+  const m = ATTACHED.exec(text)
+  if (!m) return { text, count: 0 }
+  return { text: text.slice(m[0].length).trim(), count: m[0].trim().split(/\s+/).length }
 }
 
 /** 실패한 도구 결과 id 를 모은다. */

@@ -1,7 +1,7 @@
 // Pod 패널: 요약 → 지금 움직이는 에이전트 → 디렉토리별 워크스페이스(상태별) / 에이전트 / 그래프.
 import type { AgentView, RepoView, Snapshot, TerminalRef, Topic, WorkspaceView } from '../model'
 import { topicPath, topicRoot } from '../model'
-import { createController } from './controller'
+import { createController, type ControlView } from './controller'
 import { createDetail } from './detail'
 import { dragJustEnded, draggableRow } from './dnd'
 import { burstAt, celebrate, floatText } from './fx'
@@ -355,6 +355,7 @@ function workspaceMenu(at: { x: number; y: number } | Element, w: WorkspaceView,
     { label: 'Claude 시작', icon: 'bot', onSelect: () => launchAgent(w, 'claude') },
     { label: 'Codex 시작', icon: 'bot', onSelect: () => launchAgent(w, 'codex') },
     ...(repo ? [{ label: '하위 워크스페이스', icon: 'sub', onSelect: () => createWorkspace(repo, w) }] : []),
+    { label: '관제에 보내기', icon: 'sparkle', onSelect: () => controller.insert(w) },
     { label: '메모 편집', icon: 'edit', onSelect: () => editComment(w) },
     ...(w.unread ? [{ label: '읽음으로 표시', icon: 'eye', onSelect: () => void call('pod.markRead', { id: w.id }) }] : []),
     ...(w.pr?.url ? [{ label: `PR #${w.pr.number} 열기`, icon: 'pr', onSelect: () => openPR(w) }] : []),
@@ -424,7 +425,8 @@ function agentCard(wsId: string, key: string): HTMLElement | null {
 
   const actions: HTMLElement[] = [
     h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), '작업실'),
-    h('button', { class: 'pill-btn', onClick: () => focusAgent(w, a) }, icon('open'), 'Orca')
+    h('button', { class: 'pill-btn', onClick: () => focusAgent(w, a) }, icon('open'), 'Orca'),
+    h('button', { class: 'pill-btn', onClick: () => (hideHover(), controller.insert(w, a)) }, icon('sparkle'), '관제에 보내기')
   ]
   if (a.terminal && a.state !== 'done') {
     if (a.state === 'working') {
@@ -1533,6 +1535,11 @@ function renderAgents(snap: Snapshot): HTMLElement[] {
 
 /* ---------- 상세(작업실) ---------- */
 
+function detailOpenUrl(url: string): void {
+  if (!/^https?:\/\//.test(url)) return
+  void Promise.resolve(orca.shell.openExternal(url)).catch(() => toast('링크를 열지 못했습니다', 'err'))
+}
+
 const detail = createDetail({
   snap: () => state.snap,
   call,
@@ -1544,10 +1551,7 @@ const detail = createDetail({
   openPR,
   toast,
   closeTabs: (handles) => closeTabs(null, handles),
-  openUrl: (url) => {
-    if (!/^https?:\/\//.test(url)) return
-    void Promise.resolve(orca.shell.openExternal(url)).catch(() => toast('링크를 열지 못했습니다', 'err'))
-  },
+  openUrl: (url) => detailOpenUrl(url),
   onSelect: (sel) => {
     graph.select(sel)
     queueMicrotask(() => controller.update())
@@ -1566,11 +1570,9 @@ const detail = createDetail({
 
 const controller = createController({
   snap: () => state.snap,
-  scope: () => state.repo ?? null,
   call,
   toast,
-  openDetail: (w, a, from) => detail.open(w.id, a.key, from, { host: detailHost() }),
-  focusAgent,
+  openUrl: (url) => detailOpenUrl(url),
   hidden: () => detail.isOpen()
 })
 
@@ -1761,6 +1763,7 @@ async function start(): Promise<void> {
   renderTop()
   renderBody()
   orca.plugin?.on?.('pod.changed', (snap: Snapshot) => receive(snap))
+  orca.plugin?.on?.('pod.control.view', (v: ControlView) => controller.receive(v))
   await sync(true)
   // 이벤트가 오지 않는 변화(도구 호출, 메시지)를 위해 화면이 보일 때만 주기적으로 맞춘다.
   window.setInterval(() => {

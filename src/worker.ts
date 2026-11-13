@@ -1,10 +1,14 @@
 // Pod 워커. 화면(패널)의 요청을 받아 orca CLI 와 호스트 API 로 데이터를 모으고 조작을 실행한다.
 // 셸을 거치지 않고 execFile 로 인자 배열을 넘기므로 입력값이 명령으로 해석되지 않는다.
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
-import { readConversation } from './conversation'
+import { readConversation, readSession } from './conversation'
+import { CONTROL_DIR, controlArgs, writeControlFiles, writeControlMap } from './control'
+import { ControlRuntime, type ControlImage } from './runtime'
 import { normalize, type Snapshot, type Topic, type TopicSet } from './model'
 
 const CLI_CANDIDATES = [process.env.ORCA_CLI, '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(
@@ -46,6 +50,64 @@ function text(v: unknown, field: string, max = 20_000): string {
   if (typeof v !== 'string' || v.length === 0) throw new CliError(`${field} 값이 비어 있습니다`)
   if (v.length > max) throw new CliError(`${field} 값이 너무 깁니다`)
   return v
+}
+
+const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
+/** 사진 한 장 최대 크기(바이트). */
+export const IMAGE_MAX = 15 * 1024 * 1024
+export const ATTACH_DIR = join(tmpdir(), 'pod-attachments')
+/** 관제에 바로 넘기는 사진 한 장 최대 크기(바이트). */
+const CONTROL_IMAGE_MAX = 5 * 1024 * 1024
+
+/** 붙인 사진은 이틀 지나면 지운다. */
+async function sweepAttachments(): Promise<void> {
+  const old = Date.now() - 2 * 24 * 3600_000
+  for (const n of await readdir(ATTACH_DIR).catch(() => [] as string[])) {
+    const p = join(ATTACH_DIR, n)
+    const st = await stat(p).catch(() => null)
+    if (st && st.mtimeMs < old) await unlink(p).catch(() => {})
+  }
+}
+
+const CONTROL_KEY = 'control-session'
+
+/** 예전 워커가 띄운 관제 프로세스면 내린다. 번호가 다른 프로세스에 다시 쓰였을 수 있어 명령 줄을 확인한다. */
+function killStaleControl(pid: number): Promise<string> {
+  return new Promise((resolve) => {
+    execFile('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='], (err, out) => {
+      const cmd = String(out ?? '')
+      if (err || !cmd.includes('--input-format stream-json') || !cmd.includes(CONTROL_DIR)) return resolve('해당 없음')
+      try {
+        process.kill(pid, 'SIGTERM')
+        resolve('내림')
+      } catch (e: any) {
+        resolve(`실패 ${e?.code ?? ''}`)
+      }
+    })
+  })
+}
+
+/** 워커가 내려갈 때 관제 프로세스도 내린다. */
+let controlRuntime: ControlRuntime | null = null
+export function deactivate(): void {
+  controlRuntime?.shutdown()
+  controlRuntime = null
+}
+
+/**
+ * 관제를 띄울 곳: Claude 세션이 가장 최근에 돈 워크스페이스(이미 신뢰한 폴더라 «폴더 신뢰» 확인에 걸리지 않는다).
+ * 같은 저장소의 메인 워크트리가 있으면 그쪽을 쓴다.
+ */
+export function pickControlHome(snap: Snapshot): string | null {
+  const all = Object.values(snap.workspaces)
+  const used = all
+    .map((w) => ({ w, at: Math.max(0, ...w.agents.filter((a) => a.type === 'claude').map((a) => a.updatedAt)) }))
+    .filter((x) => x.at > 0)
+    .sort((a, b) => b.at - a.at)
+  const best = used[0]?.w
+  if (!best) return null
+  const main = used.find((x) => x.w.repoId === best.repoId && x.w.isMain)?.w
+  return (main ?? best).id
 }
 
 const worktreeSelector = (id: string) => `id:${id}`
@@ -221,6 +283,9 @@ export default function activate(orca: any): void {
     return editTopicSet(repoId, () => set)
   }
 
+  /** 관제 세션이 살아 있으면 스냅샷마다 세션 지도를 쓴다. */
+  let controlOn = false
+
   async function build(): Promise<Snapshot> {
     const [ps, terminals, ids, topics] = await Promise.all([
       runCli(['worktree', 'ps']),
@@ -228,7 +293,10 @@ export default function activate(orca: any): void {
       workspaceIds(),
       topicSets().catch(() => ({}) as Record<string, TopicSet>)
     ])
-    return normalize(ps, terminals, ids, Date.now(), topics)
+    const snap = normalize(ps, terminals, ids, Date.now(), topics)
+    // 관제 세션이 있으면 세션 지도를 갱신한다(바뀌었을 때만 쓴다).
+    if (controlOn) void writeControlMap(CONTROL_DIR, snap, null).catch(() => {})
+    return snap
   }
 
   async function snapshot(maxAgeMs = 1_500): Promise<Snapshot> {
@@ -293,6 +361,96 @@ export default function activate(orca: any): void {
     })
   }
 
+  // 관제: Pod 워커가 Claude 를 직접 띄워 주고받는다. 상태는 pod.control.view 로 화면에 민다.
+  let runtime: ControlRuntime | null = null
+  let controlPid: number | null = null
+  let controlSession: string | null = null
+  let saveControlRef: () => Promise<unknown> = async () => {}
+  const saveControl = () => saveControlRef()
+  let controlInit: Promise<ControlRuntime> | null = null
+  /** 관제 런타임은 하나만. 동시에 불려도 같은 것을 기다린다. */
+  function control(): Promise<ControlRuntime> {
+    if (runtime) return Promise.resolve(runtime)
+    controlInit ??= makeControl().finally(() => (controlInit = null))
+    return controlInit
+  }
+  async function makeControl(): Promise<ControlRuntime> {
+    if (runtime) return runtime
+    const saved = (await orca.storage.get(CONTROL_KEY).catch(() => null)) as { sessionId?: string; cwd?: string; pid?: number } | null
+    // 플러그인을 다시 불러도 예전 워커가 띄운 관제 프로세스는 남는다. 그 프로세스가 맞는지 확인하고 내린다.
+    if (saved?.pid) {
+      const r = await killStaleControl(saved.pid)
+      if (r !== '해당 없음') orca.log(`예전 관제 프로세스 ${saved.pid}: ${r}`)
+    }
+    const snap = await snapshot()
+    const home = pickControlHome(snap)
+    // 이어 가는 세션은 처음 띄운 폴더에서 다시 연다(기록 폴더가 작업 폴더 기준이라).
+    const cwd = saved?.cwd && existsSync(saved.cwd) ? saved.cwd : home ? snap.workspaces[home].path : homedir()
+    const rt = new ControlRuntime(
+      {
+        spawn: (extra) => {
+          controlOn = true
+          const child = spawn(claudeCli(), [...controlArgs(CONTROL_DIR), ...extra], {
+            cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            // 워커 환경에는 USER 가 없어 claude 가 키체인에서 로그인 정보를 못 찾는다.
+            env: { ...process.env, USER: process.env.USER ?? userInfo().username, LOGNAME: process.env.LOGNAME ?? userInfo().username, ELECTRON_RUN_AS_NODE: undefined }
+          })
+          controlPid = child.pid ?? null
+          void saveControl()
+          return child
+        },
+        emit: (view) => orca.panels.post('pod.control.view', view),
+        saveSession: (id) => {
+          controlSession = id
+          void saveControl()
+        },
+        history: async (id) => (await readSession(id, cwd)).items
+      },
+      saved?.cwd === cwd ? (saved?.sessionId ?? null) : null
+    )
+    controlSession = saved?.cwd === cwd ? (saved?.sessionId ?? null) : null
+    saveControlRef = () => orca.storage.set(CONTROL_KEY, { sessionId: controlSession, cwd, pid: controlPid }).catch(() => {})
+    await writeControlFiles(CONTROL_DIR, snap, null)
+    controlOn = true
+    await rt.load()
+    runtime = rt
+    controlRuntime = rt
+    return rt
+  }
+
+  orca.panels.handle('pod.control.view', async () => (await control()).view())
+  orca.panels.handle('pod.control.send', async (input: { text?: string; images?: unknown }) => {
+    const raw: any[] = Array.isArray(input?.images) ? input.images : []
+    if (raw.length > 6) throw new CliError('사진은 6장까지 보낼 수 있습니다')
+    const images: ControlImage[] = raw.map((im: any) => {
+      if (!im || !IMAGE_EXT[String(im.type)] || typeof im.data !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(im.data))
+        throw new CliError('사진만 붙일 수 있습니다')
+      // 모델에 바로 넘기는 사진은 장당 5MB 까지(넘으면 대화가 거절되고 이어 가기도 막힌다).
+      if (im.data.length > Math.ceil((CONTROL_IMAGE_MAX * 4) / 3) + 4) throw new CliError('사진은 장당 5MB 까지 보낼 수 있습니다')
+      return { type: String(im.type), data: im.data }
+    })
+    const body = typeof input?.text === 'string' ? input.text.slice(0, 20_000) : ''
+    if (!body.trim() && images.length === 0) throw new CliError('메시지 값이 비어 있습니다')
+    const rt = await control()
+    // 지도를 최신으로 맞춘 뒤 보낸다.
+    await writeControlMap(CONTROL_DIR, await snapshot(), null).catch(() => {})
+    try {
+      rt.send(body, images)
+    } catch (e: any) {
+      throw new CliError(e?.message === '작업 중' ? '관제가 답하는 중입니다' : '보내지 못했습니다')
+    }
+    return { sent: true }
+  })
+  orca.panels.handle('pod.control.stop', async () => {
+    runtime?.stop()
+    return { stopped: true }
+  })
+  orca.panels.handle('pod.control.reset', async () => {
+    ;(await control()).reset()
+    return { reset: true }
+  })
+
   orca.panels.handle('pod.snapshot', async (input: { fresh?: boolean } | undefined) =>
     snapshot(input?.fresh ? 0 : 1_500)
   )
@@ -314,6 +472,12 @@ export default function activate(orca: any): void {
       return { opened: true }
     }
     throw new CliError('이 워크스페이스를 열 방법을 찾지 못했습니다')
+  })
+
+  // 터미널 탭으로 바로 이동(그 워크스페이스로 함께 전환된다).
+  orca.panels.handle('pod.focusTerminal', async (input: { terminal: string }) => {
+    await runCli(['terminal', 'switch', '--terminal', text(input?.terminal, 'terminal', 200)])
+    return { opened: true }
   })
 
   orca.panels.handle('pod.focusAgent', async (input: { id: string; agentKey: string }) => {
@@ -365,16 +529,32 @@ export default function activate(orca: any): void {
 
   orca.panels.handle(
     'pod.conversation',
-    async (input: { path: string; key: string; type: string; title?: string; prompt?: string; since?: number }) =>
+    async (input: { path: string; key: string; type: string; title?: string; prompt?: string; since?: number; others?: unknown }) =>
       readConversation({
         path: text(input?.path, 'path', 2000),
         key: text(input?.key, 'key', 400),
         type: String(input?.type ?? ''),
         title: typeof input?.title === 'string' ? input.title.slice(0, 400) : undefined,
         prompt: typeof input?.prompt === 'string' ? input.prompt.slice(0, 400) : undefined,
-        since: typeof input?.since === 'number' && Number.isFinite(input.since) ? input.since : undefined
+        since: typeof input?.since === 'number' && Number.isFinite(input.since) ? input.since : undefined,
+        others: Array.isArray(input?.others)
+          ? input.others.filter((k): k is string => typeof k === 'string' && k.length <= 400).slice(0, 300)
+          : undefined
       })
   )
+
+  // 입력창에 붙인 사진을 임시 파일로 저장하고 경로를 돌려준다. 세션에는 이 경로를 지시와 함께 보낸다.
+  orca.panels.handle('pod.saveImage', async (input: { type: string; data: string }) => {
+    const ext = IMAGE_EXT[String(input?.type)]
+    if (!ext) throw new CliError('사진만 붙일 수 있습니다')
+    const buf = Buffer.from(text(input?.data, '사진', Math.ceil((IMAGE_MAX * 4) / 3) + 4), 'base64')
+    if (buf.length === 0) throw new CliError('사진을 읽지 못했습니다')
+    await mkdir(ATTACH_DIR, { recursive: true, mode: 0o700 })
+    void sweepAttachments()
+    const file = join(ATTACH_DIR, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`)
+    await writeFile(file, buf, { mode: 0o600 })
+    return { path: file }
+  })
 
   // 탭 닫기. 끝난 터미널(초기 설정 등)을 치울 때 쓴다.
   orca.panels.handle('pod.closeTerminals', async (input: { terminals: string[] }) => {

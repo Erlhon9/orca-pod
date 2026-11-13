@@ -2497,6 +2497,103 @@ html.light .screen {
   opacity: 0.35;
 }
 
+/* 사진 첨부: 붙인 사진 줄 + 입력 줄 */
+.composer.stack {
+  flex-direction: column;
+  align-items: stretch;
+  padding-left: 6px;
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.composer .attach {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--muted);
+  flex: none;
+}
+
+.composer .attach:hover {
+  color: var(--fg);
+  background: var(--muted-fill);
+}
+
+.composer.dropping {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
+}
+
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 2px 4px;
+}
+
+.attach-tray[hidden] {
+  display: none;
+}
+
+.attach-item {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  animation: pop-in 0.18s var(--ease);
+}
+
+.attach-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attach-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+}
+
+.attach-x .i {
+  width: 11px;
+  height: 11px;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+/* 첫 요청 전 새 대화 */
+.chat-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin: auto;
+  padding: 40px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
 .chat-view {
   flex: 1;
   min-height: 0;
@@ -3286,98 +3383,6 @@ html.light .md-code {
   min-width: 0;
 }
 
-.dk-target {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 4px 8px 4px 4px;
-  border-radius: 10px;
-  text-align: left;
-  transition: background 0.15s;
-}
-
-.dk-target:hover {
-  background: var(--hover);
-}
-
-.dk-target > .i {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  color: var(--muted);
-  transform: rotate(90deg);
-}
-
-.dk-title {
-  display: grid;
-  min-width: 0;
-  line-height: 1.25;
-}
-
-.dk-title b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12.5px;
-  font-weight: 650;
-}
-
-.dk-ws {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10.5px;
-  color: var(--muted);
-}
-
-.dk-target .when {
-  flex: none;
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.dk-target .state-pill {
-  flex: none;
-}
-
-.dk-auto {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 5px;
-  border: 1px solid var(--line);
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.dk-attn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--a-blocked) 14%, transparent);
-  color: var(--a-blocked);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.dk-attn i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: ping 1.6s ease-out infinite;
-}
-
-.dk-attn[hidden] {
-  display: none;
-}
-
 .dk-preview {
   display: flex;
   align-items: baseline;
@@ -3455,51 +3460,15 @@ html.light .md-code {
   color: var(--muted);
 }
 
-.dk-ctl {
-  flex-wrap: wrap;
-}
-
-.dk-keys {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
 .dock .dk-composer {
   margin: 0 0 8px;
-}
-
-.dock > .pill-btn {
-  justify-self: end;
-  margin-bottom: 8px;
-}
-
-.dock:not(.chat) > .pill-btn,
-.dock.chat .dk-ctl,
-.dock.chat .dk-composer {
-  display: none;
 }
 
 .dk-fold .i {
   transform: rotate(90deg);
   transition: transform 0.2s var(--ease);
 }
-
-.dock.mini .dk-fold .i {
-  transform: rotate(-90deg);
-}
-
-.dock.mini {
-  padding-bottom: 8px;
-}
-
 /* 접어도 승인 대기 질문은 보인다. */
-.dock.mini .dk-preview:not([data-kind='prompt']),
-.dock.mini .dk-ctl,
-.dock.mini .dk-composer,
-.dock.mini > .pill-btn {
-  display: none;
-}
 
 /* ---------- 그래프: 섹션 알약 · 워크스페이스 카드 ---------- */
 
@@ -3965,7 +3934,6 @@ html.light .md-code {
 .rchip,
 .seg button,
 .gc-sess,
-.dk-target,
 .d-tab {
   transition: transform 0.12s var(--ease), background 0.15s, color 0.15s, box-shadow 0.15s;
 }
@@ -4628,4 +4596,57 @@ body.row-dragging [data-drop].drop-over {
 .graph-wrap * {
   -webkit-user-select: none;
   user-select: none;
+}
+
+/* ---------- 관제 줄 ---------- */
+.dock.control {
+  padding-top: 6px;
+}
+
+.dk-badge {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  flex: none;
+  color: #fff;
+  background: linear-gradient(135deg, #7c5cff, #3aa0ff);
+  box-shadow: 0 2px 10px -2px color-mix(in srgb, #7c5cff 60%, transparent);
+}
+
+.dk-badge .i {
+  width: 14px;
+  height: 14px;
+}
+
+.dk-name {
+  font-size: 12.5px;
+}
+
+.dock .spacer {
+  flex: 1;
+}
+
+.dk-chat {
+  display: none;
+  max-height: 46vh;
+  min-height: 120px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.dock.open .dk-chat {
+  display: block;
+  animation: pop-in 0.18s var(--ease);
+}
+
+.dock.open .dk-fold .i {
+  transform: rotate(90deg);
+}
+
+.dock .dk-fold .i {
+  transform: rotate(-90deg);
 }

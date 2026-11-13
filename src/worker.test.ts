@@ -1,7 +1,8 @@
 // 워커의 입력 검증: 빈 값이나 엉뚱한 값은 CLI 를 부르기 전에 거절한다.
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
-import { cleanTopics, mergeSuggested, userMessage } from './worker'
+import { readFile, unlink } from 'node:fs/promises'
+import { ATTACH_DIR, cleanTopics, mergeSuggested, pickControlHome, userMessage } from './worker'
 
 test('빈 메시지는 보내지 않는다', async () => {
   const worker = await mountWorker(main, { host: mockHost({}) })
@@ -93,4 +94,48 @@ test('주제 id 「_」(기타 예약)는 받지 않는다', () => {
 test('실패 문구: 한국어 원문은 첫 줄, 영어·명령 경로는 고정 문구', () => {
   assert.equal(userMessage('워크트리를 찾지 못했습니다\n자세히'), '워크트리를 찾지 못했습니다')
   assert.equal(userMessage('Command failed: /usr/local/bin/orca worktree set'), 'Orca 명령이 실패했습니다')
+})
+
+test('붙인 사진은 임시 폴더에 저장하고 경로를 돌려준다', async () => {
+  const worker = await mountWorker(main, { host: mockHost({}) })
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+  const r = (await worker.request('pod.saveImage', { type: 'image/png', data: png.toString('base64') })) as { path: string }
+  assert.equal(r.path.startsWith(ATTACH_DIR), true)
+  assert.equal(r.path.endsWith('.png'), true)
+  assert.equal(Buffer.compare(await readFile(r.path), png), 0)
+  await unlink(r.path)
+  await worker.deactivate()
+})
+
+test('사진이 아닌 파일은 저장하지 않는다', async () => {
+  const worker = await mountWorker(main, { host: mockHost({}) })
+  let failed = false
+  try {
+    await worker.request('pod.saveImage', { type: 'text/html', data: Buffer.from('<b>x</b>').toString('base64') })
+  } catch {
+    failed = true
+  }
+  assert.equal(failed, true)
+  await worker.deactivate()
+})
+
+test('터미널 핸들이 없으면 탭으로 이동하지 않는다', async () => {
+  const worker = await mountWorker(main, { host: mockHost({}) })
+  let failed = false
+  try {
+    await worker.request('pod.focusTerminal', {})
+  } catch {
+    failed = true
+  }
+  assert.equal(failed, true)
+  await worker.deactivate()
+})
+
+test('관제는 Claude 가 최근에 돈 저장소에, 그 저장소 메인 워크트리에서 Claude 가 돈 적이 있으면 거기서 띄운다', () => {
+  const w = (id: string, repoId: string, isMain: boolean, at: number) =>
+    ({ id, repoId, isMain, agents: at ? [{ type: 'claude', updatedAt: at }] : [] }) as any
+  const snap = (ws: any[]) => ({ workspaces: Object.fromEntries(ws.map((x) => [x.id, x])) }) as any
+  assert.equal(pickControlHome(snap([w('a', 'r1', true, 0), w('b', 'r2', false, 50), w('c', 'r2', true, 10)])), 'c')
+  assert.equal(pickControlHome(snap([w('a', 'r1', true, 0), w('b', 'r2', false, 50)])), 'b')
+  assert.equal(pickControlHome(snap([w('a', 'r1', true, 0)])), null)
 })
