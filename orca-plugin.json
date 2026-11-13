@@ -2,32 +2,32 @@
   "manifestVersion": 2,
   "id": "pod",
   "name": "Pod",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "See and steer every Orca workspace and agent session on one map",
   "cover": {
     "path": "images/graph.jpg",
-    "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked."
+    "alt": "Graph with fictional example workspaces grouped by topic"
   },
   "screenshots": [
     {
       "path": "images/graph.jpg",
-      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
-      "caption": "Workspaces on one map, grouped by topic (redacted demo)"
+      "alt": "Graph with fictional example workspaces grouped by topic",
+      "caption": "Workspaces on one map, grouped by topic"
     },
     {
       "path": "images/session.jpg",
-      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
-      "caption": "Read and steer a session without leaving the map (redacted demo)"
+      "alt": "Session window with a generic fictional conversation",
+      "caption": "Read and steer a session without leaving the map"
     },
     {
       "path": "images/control.jpg",
-      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
-      "caption": "Control: one Claude that watches and relays to every session (redacted demo)"
+      "alt": "Control showing a generic example exchange",
+      "caption": "Coordinate sessions from the Control bar"
     },
     {
       "path": "images/board.jpg",
-      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
-      "caption": "Board: what needs you now, then everything by topic (redacted demo)"
+      "alt": "Board with generic workspace names and agent states",
+      "caption": "See what needs your attention"
     }
   ],
   "engines": {
