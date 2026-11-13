@@ -2,32 +2,32 @@
   "manifestVersion": 2,
   "id": "pod",
   "name": "Pod",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "See and steer every Orca workspace and agent session on one map",
   "cover": {
     "path": "images/graph.jpg",
-    "alt": "Pod graph: a repository in the middle, topics around it, workspace cards with live sessions, and the control bar at the bottom"
+    "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked."
   },
   "screenshots": [
     {
       "path": "images/graph.jpg",
-      "alt": "Graph of workspaces grouped by topic with session states",
-      "caption": "Workspaces on one map, grouped by topic"
+      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
+      "caption": "Workspaces on one map, grouped by topic (redacted demo)"
     },
     {
       "path": "images/session.jpg",
-      "alt": "Session window opened inside the graph showing a Claude session as a conversation",
-      "caption": "Read and steer a session without leaving the map"
+      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
+      "caption": "Read and steer a session without leaving the map (redacted demo)"
     },
     {
       "path": "images/control.jpg",
-      "alt": "Control bar expanded with a conversation that relays an instruction to another session",
-      "caption": "Control: one Claude that watches and relays to every session"
+      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
+      "caption": "Control: one Claude that watches and relays to every session (redacted demo)"
     },
     {
       "path": "images/board.jpg",
-      "alt": "Board view with urgent sessions on top and workspaces grouped by topic",
-      "caption": "Board: what needs you now, then everything by topic"
+      "alt": "Redacted demo screenshot. Workspace names, identifiers, commands and conversation text are masked.",
+      "caption": "Board: what needs you now, then everything by topic (redacted demo)"
     }
   ],
   "engines": {

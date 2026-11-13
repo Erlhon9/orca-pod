@@ -151,3 +151,5 @@ orca plugin validate . --json
 ```
 
 CLI 경로는 `ORCA_CLI` 환경 변수 → `/usr/local/bin/orca` → `/opt/homebrew/bin/orca` → `PATH` 순으로 찾는다.
+
+Screenshots use synthetic demo data with workspace names, identifiers, commands and conversation text redacted.
