@@ -1,5 +1,6 @@
 // 그래프 보기(궤도): 디렉토리 → 섹션(주제, 주제가 없으면 상태) → 워크스페이스 카드를 힘 기반 배치로 그린다.
 // 카드 안에 제목·요약·세션이 들어가 있어 호버하지 않아도 읽힌다. 갱신 때 기존 좌표를 이어 받아 튀지 않게 한다.
+import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import { topicRoot } from '../model'
 import { openMenu } from './overlays'
@@ -54,6 +55,8 @@ export interface GraphHooks {
   hoverWorkspace(el: Element, wsId: string): void
   hoverAgent(el: Element, wsId: string, agentKey: string): void
   hoverTabs(el: Element, wsId: string): void
+  /** 세션 참조를 관제 입력창에 넣는다. */
+  sendToControl(w: WorkspaceView, a: AgentView, from: Element): void
   /** 고른 범위에서 끝났는데 탭만 남은 터미널. */
   deadTabs(): string[]
   closeTabs(handles: string[]): Promise<void>
@@ -374,13 +377,13 @@ export function createGraph(hooks: GraphHooks) {
   const tools = h(
     'div',
     { class: 'graph-tools' },
-    h('button', { class: 'icon-btn', title: '확대', onClick: () => zoomAt(1.25, wrap.clientWidth / 2, wrap.clientHeight / 2) }, icon('zoomIn')),
-    h('button', { class: 'icon-btn', title: '축소', onClick: () => zoomAt(0.8, wrap.clientWidth / 2, wrap.clientHeight / 2) }, icon('zoomOut')),
+    h('button', { class: 'icon-btn', title: t('확대'), onClick: () => zoomAt(1.25, wrap.clientWidth / 2, wrap.clientHeight / 2) }, icon('zoomIn')),
+    h('button', { class: 'icon-btn', title: t('축소'), onClick: () => zoomAt(0.8, wrap.clientWidth / 2, wrap.clientHeight / 2) }, icon('zoomOut')),
     h(
       'button',
       {
         class: 'icon-btn',
-        title: '전체 보기',
+        title: t('전체 보기'),
         onClick: () => {
           userMoved = false
           fit(true)
@@ -390,20 +393,20 @@ export function createGraph(hooks: GraphHooks) {
     )
   )
   const groupSeg = h('div', { class: 'seg sm' })
-  const foldBtn = h('button', { class: 'pill-btn', title: '주제 모두 접기·펼치기' })
+  const foldBtn = h('button', { class: 'pill-btn', title: t('주제 모두 접기·펼치기') })
   foldBtn.addEventListener('click', () => {
     const anyOpen = nodeEls.some((x) => x.n.kind === 'hub' && !x.n.collapsed)
     lastKey = ''
     hooks.setSectionState(sectionKeys, anyOpen ? 'closed' : 'open')
   })
-  const sweepBtn = h('button', { class: 'pill-btn g-sweep', title: '끝났는데 탭만 남은 터미널(초기 설정 등) 닫기' })
+  const sweepBtn = h('button', { class: 'pill-btn g-sweep', title: t('끝났는데 탭만 남은 터미널(초기 설정 등) 닫기') })
   let sweepArmed = 0
   sweepBtn.addEventListener('click', () => {
     const handles = hooks.deadTabs()
     if (!handles.length) return
     if (!sweepArmed) {
       sweepBtn.classList.add('armed')
-      sweepBtn.replaceChildren(icon('broom'), `한 번 더 누르면 ${handles.length}개 닫기`)
+      sweepBtn.replaceChildren(icon('broom'), t(`한 번 더 누르면 {n}개 닫기`, { n: handles.length }))
       sweepArmed = window.setTimeout(() => {
         sweepArmed = 0
         renderBar()
@@ -423,8 +426,8 @@ export function createGraph(hooks: GraphHooks) {
     groupSeg.replaceChildren(
       ...(
         [
-          ['topic', '주제별'],
-          ['status', '상태별']
+          ['topic', t('주제별')],
+          ['status', t('상태별')]
         ] as const
       ).map(([id, label]) =>
         h(
@@ -442,12 +445,12 @@ export function createGraph(hooks: GraphHooks) {
       )
     )
     const anyOpen = nodeEls.some((x) => x.n.kind === 'hub' && !x.n.collapsed)
-    foldBtn.replaceChildren(icon(anyOpen ? 'fold' : 'unfold'), anyOpen ? '모두 접기' : '모두 펼치기')
+    foldBtn.replaceChildren(icon(anyOpen ? 'fold' : 'unfold'), anyOpen ? t('모두 접기') : t('모두 펼치기'))
     if (!sweepArmed) {
       const n = hooks.deadTabs().length
       sweepBtn.classList.remove('armed')
       sweepBtn.hidden = n === 0
-      sweepBtn.replaceChildren(icon('broom'), `끝난 탭 ${n}`)
+      sweepBtn.replaceChildren(icon('broom'), t(`끝난 탭 {n}`, { n }))
     }
   }
   const legend = h('div', { class: 'graph-legend' })
@@ -489,7 +492,7 @@ export function createGraph(hooks: GraphHooks) {
       const sections: Sec[] = byTopic
         ? [
             ...repo.topics.map((t) => ({ id: t.id, name: t.name, color: topicColor(topicRoot(repo.topics, t.id)), parent: t.parent && known.has(t.parent) ? t.parent : null })),
-            { id: '_', name: '기타', color: 'var(--muted)', parent: null }
+            { id: '_', name: t('기타'), color: 'var(--muted)', parent: null }
           ]
         : [...new Set(ids.map((id) => snap.workspaces[id].status))]
             .sort((a, b) => (STATUS_RANK[a] ?? 3.5) - (STATUS_RANK[b] ?? 3.5))
@@ -598,7 +601,7 @@ export function createGraph(hooks: GraphHooks) {
           y: node.y + Math.sin(ang) * 120,
           vx: 0,
           vy: 0,
-          label: `외 ${x.hidden}개`,
+          label: t(`외 {hidden}개`, { hidden: x.hidden }),
           color: x.t.color,
           hot: false,
           repoId: repo.id,
@@ -679,12 +682,20 @@ export function createGraph(hooks: GraphHooks) {
   }
 
   function sessionRow(w: WorkspaceView, a: AgentView): HTMLElement {
+    // 줄 자체가 버튼이라 안에는 span 으로 둔다. 올렸을 때만 보인다.
+    const ref = h('span', { class: 'gc-ref', role: 'button', title: t('관제 입력창에 넣기') }, icon('sparkle'))
+    ref.addEventListener('pointerdown', (ev) => ev.stopPropagation())
+    ref.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      hooks.sendToControl(w, a, ref)
+    })
     const row = h(
       'button',
       { class: 'gc-sess', 'data-state': a.state, 'data-sel': `s:${a.key}`, title: a.title },
       h('span', { class: 'gc-glyph', 'data-type': a.type }, agentGlyph(a.type)),
       h('span', { class: 'gc-st' }, a.title),
-      h('span', { class: 'gc-state' }, a.state === 'working' && a.tool ? a.tool.name : AGENT_STATE_LABEL[a.state])
+      h('span', { class: 'gc-state' }, a.state === 'working' && a.tool ? a.tool.name : AGENT_STATE_LABEL[a.state]),
+      ref
     )
     row.addEventListener('click', (ev) => {
       ev.stopPropagation()
@@ -703,7 +714,7 @@ export function createGraph(hooks: GraphHooks) {
     const list = [...w.terminals].sort((a, b) => order(a) - order(b))
     const dead = list.filter((t) => !t.connected).length
     const chips = [
-      ...chats.map((a) => h('span', { class: 'gc-tab agent chat', 'data-type': a.type, title: `${a.title} · 대화창` }, agentGlyph(a.type))),
+      ...chats.map((a) => h('span', { class: 'gc-tab agent chat', 'data-type': a.type, title: t(`{title} · 대화창`, { title: a.title }) }, agentGlyph(a.type))),
       ...list.map((t) =>
         h(
           'span',
@@ -718,8 +729,8 @@ export function createGraph(hooks: GraphHooks) {
       { class: 'gc-tabs' },
       chips.slice(0, 7),
       total > 7 ? h('span', { class: 'gc-tab-more' }, `+${total - 7}`) : null,
-      h('span', { class: 'gc-tab-label' }, `세션 ${total}`),
-      dead ? h('span', { class: 'gc-tab-dead' }, `끝남 ${dead}`) : null
+      h('span', { class: 'gc-tab-label' }, t(`세션 {total}`, { total })),
+      dead ? h('span', { class: 'gc-tab-dead' }, t(`끝남 {dead}`, { dead })) : null
     )
     strip.addEventListener('click', (ev) => ev.stopPropagation())
     hooks.hoverTabs(strip, w.id)
@@ -729,7 +740,7 @@ export function createGraph(hooks: GraphHooks) {
   function card(p: GNode, w: WorkspaceView): HTMLElement {
     const r = recap(w)
     const sess = cardSessions(w)
-    const plus = h('button', { class: 'gc-add', title: '세션 추가' }, icon('plus'))
+    const plus = h('button', { class: 'gc-add', title: t('세션 추가') }, icon('plus'))
     plus.addEventListener('click', (ev) => {
       ev.stopPropagation()
       hooks.addToWorkspace(w, plus)
@@ -751,7 +762,7 @@ export function createGraph(hooks: GraphHooks) {
             'div',
             { class: 'gc-sessions' },
             sess.slice(0, 3).map((a) => sessionRow(w, a)),
-            sess.length > 3 ? h('span', { class: 'gc-more' }, `세션 ${sess.length - 3}개 더`) : null
+            sess.length > 3 ? h('span', { class: 'gc-more' }, t(`세션 {n}개 더`, { n: sess.length - 3 })) : null
           )
         : null,
       tabStrip(w)
@@ -843,7 +854,7 @@ export function createGraph(hooks: GraphHooks) {
         ic.setAttribute('width', '18')
         ic.setAttribute('height', '18')
         const plus = s('g', { class: 'g-repo-plus', transform: 'translate(19 -19)' }, s('circle', { r: 9 }), s('path', { d: 'M-4 0h8M0 -4v8' }))
-        g.append(ic, plus, s('text', { class: 'g-label repo', y: 46, 'text-anchor': 'middle' }, p.label), s('title', null, '눌러서 주제 추가'))
+        g.append(ic, plus, s('text', { class: 'g-label repo', y: 46, 'text-anchor': 'middle' }, p.label), s('title', null, t('눌러서 주제 추가')))
         g.addEventListener('click', () => {
           pop(g.querySelector('.core'))
           hooks.addSection(p.repoId)
@@ -852,21 +863,21 @@ export function createGraph(hooks: GraphHooks) {
         const fo = s('foreignObject', { x: -p.hw - 8, y: -p.hh - 8, width: p.hw * 2 + 16, height: p.hh * 2 + 16 })
         const pill = h(
           'div',
-          { class: `gh${p.collapsed ? ' collapsed' : ''}${p.sub ? ' sub' : ''}`, style: { '--t': p.color }, title: p.collapsed ? '눌러서 펼치기' : '눌러서 접기' },
+          { class: `gh${p.collapsed ? ' collapsed' : ''}${p.sub ? ' sub' : ''}`, style: { '--t': p.color }, title: p.collapsed ? t('눌러서 펼치기') : t('눌러서 접기') },
           h('span', { class: 'gh-name' }, p.label),
           p.collapsed && p.attention ? h('span', { class: 'gh-live attn' }, h('i'), p.attention) : null,
           p.collapsed && p.working ? h('span', { class: 'gh-live work' }, h('i'), p.working) : null,
           h('span', { class: 'gh-n' }, p.count ?? 0)
         )
         if (p.topicId !== undefined) {
-          const add = h('button', { class: 'gh-add', title: p.topicId ? '새 워크스페이스 · 하위 주제' : '여기에 새 워크스페이스' }, icon('plus'))
+          const add = h('button', { class: 'gh-add', title: p.topicId ? t('새 워크스페이스 · 하위 주제') : t('여기에 새 워크스페이스') }, icon('plus'))
           add.addEventListener('click', (ev) => {
             ev.stopPropagation()
             if (!p.topicId) return hooks.addSession(p.repoId, null, add)
             openMenu(add, [
               { section: p.label },
-              { label: '새 워크스페이스', icon: 'plus', onSelect: () => hooks.addSession(p.repoId, p.topicId ?? null, add) },
-              { label: '하위 주제 추가', icon: 'sub', onSelect: () => hooks.addSection(p.repoId, p.topicId ?? undefined) }
+              { label: t('새 워크스페이스'), icon: 'plus', onSelect: () => hooks.addSession(p.repoId, p.topicId ?? null, add) },
+              { label: t('하위 주제 추가'), icon: 'sub', onSelect: () => hooks.addSection(p.repoId, p.topicId ?? undefined) }
             ])
           })
           pill.append(add)
@@ -876,7 +887,7 @@ export function createGraph(hooks: GraphHooks) {
         g.append(fo)
       } else if (p.kind === 'more') {
         const fo = s('foreignObject', { x: -p.hw - 6, y: -p.hh - 6, width: p.hw * 2 + 12, height: p.hh * 2 + 12 })
-        const btn = h('button', { class: 'g-more', style: { '--t': p.color }, title: '이 주제의 워크스페이스 모두 보기' }, h('span', { class: 'stack' }), p.label)
+        const btn = h('button', { class: 'g-more', style: { '--t': p.color }, title: t('이 주제의 워크스페이스 모두 보기') }, h('span', { class: 'stack' }), p.label)
         btn.addEventListener('click', () => {
           pendingFocus = p.anchor?.id ?? null
           lastKey = ''
@@ -1129,7 +1140,7 @@ export function createGraph(hooks: GraphHooks) {
       if (prevStatus.get(w.id) && prevStatus.get(w.id) !== 'completed' && w.status === 'completed') {
         const r = c.getBoundingClientRect()
         celebrate(r.left + r.width / 2, r.top + r.height / 2)
-        floatAt(c, '완료!', 'var(--s-completed)')
+        floatAt(c, t('완료!'), 'var(--s-completed)')
         continue
       }
       for (const a of w.agents) {
@@ -1141,7 +1152,7 @@ export function createGraph(hooks: GraphHooks) {
           burstAt(row ?? c, a.state === 'blocked' ? 'var(--a-blocked)' : 'var(--a-waiting)', 10, 0.7)
         } else if (before === 'working' && (a.state === 'idle' || a.state === 'done')) {
           burstAt(row ?? c, '#3ecf8e', 14, 0.9)
-          floatAt(row ?? c, '끝!', '#3ecf8e')
+          floatAt(row ?? c, t('끝!'), '#3ecf8e')
         } else if (a.state === 'working' && before !== 'working') {
           burstAt(row ?? c, 'var(--a-working)', 8, 0.6)
         }

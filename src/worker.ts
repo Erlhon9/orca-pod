@@ -8,7 +8,13 @@ import { homedir, tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { readConversation, readSession } from './conversation'
 import { CONTROL_DIR, controlArgs, writeControlFiles, writeControlMap } from './control'
-import { ControlRuntime, type ControlImage } from './runtime'
+import { ControlRuntime, type ControlImage, type ControlView } from './runtime'
+import { CodexControlRuntime } from './codex-runtime'
+import { TerminalControlRuntime, terminalControlPrompt, controlLaunchResult, controlScreenLines } from './terminal-control'
+import { CONTROL_AGENTS, controlAgentLabel } from './control-agents'
+import { controlHandoff, mergeControlHistory, visibleControlItem } from './control-handoff'
+import { isControlProvider, relayTool, type ControlProvider } from './relay'
+import type { ChatItem } from './transcript'
 import { normalize, type Snapshot, type Topic, type TopicSet } from './model'
 
 const CLI_CANDIDATES = [process.env.ORCA_CLI, '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(
@@ -70,13 +76,16 @@ async function sweepAttachments(): Promise<void> {
 }
 
 const CONTROL_KEY = 'control-session'
+const CONTROL_PROVIDER_KEY = 'control-provider'
+const CONTROL_HANDOFF_KEY = 'control-handoff'
+type ControlEngine = ControlRuntime | CodexControlRuntime | TerminalControlRuntime
 
 /** 예전 워커가 띄운 관제 프로세스면 내린다. 번호가 다른 프로세스에 다시 쓰였을 수 있어 명령 줄을 확인한다. */
 function killStaleControl(pid: number): Promise<string> {
   return new Promise((resolve) => {
     execFile('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='], (err, out) => {
       const cmd = String(out ?? '')
-      if (err || !cmd.includes('--input-format stream-json') || !cmd.includes(CONTROL_DIR)) return resolve('해당 없음')
+      if (err || (!cmd.includes('--input-format stream-json') && !cmd.includes('app-server')) || !cmd.includes(CONTROL_DIR)) return resolve('해당 없음')
       try {
         process.kill(pid, 'SIGTERM')
         resolve('내림')
@@ -88,9 +97,9 @@ function killStaleControl(pid: number): Promise<string> {
 }
 
 /** 워커가 내려갈 때 관제 프로세스도 내린다. */
-let controlRuntime: ControlRuntime | null = null
+let controlRuntime: ControlEngine | null = null
 export function deactivate(): void {
-  controlRuntime?.shutdown()
+  void Promise.resolve(controlRuntime?.shutdown()).catch(() => {})
   controlRuntime = null
 }
 
@@ -131,6 +140,11 @@ const KEYS: Record<string, string> = {
 function claudeCli(): string {
   const candidates = [process.env.POD_CLAUDE_CLI, join(homedir(), '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']
   return candidates.find((p): p is string => typeof p === 'string' && p.length > 0 && existsSync(p)) ?? 'claude'
+}
+
+function codexCli(): string {
+  const candidates = [process.env.POD_CODEX_CLI, join(homedir(), '.local/bin/codex'), '/opt/homebrew/bin/codex', '/usr/local/bin/codex']
+  return candidates.find((p): p is string => typeof p === 'string' && p.length > 0 && existsSync(p)) ?? 'codex'
 }
 
 export function slug(name: string, taken: Set<string>): string {
@@ -285,6 +299,7 @@ export default function activate(orca: any): void {
 
   /** 관제 세션이 살아 있으면 스냅샷마다 세션 지도를 쓴다. */
   let controlOn = false
+  let controlSelf: string | null = null
 
   async function build(): Promise<Snapshot> {
     const [ps, terminals, ids, topics] = await Promise.all([
@@ -295,7 +310,7 @@ export default function activate(orca: any): void {
     ])
     const snap = normalize(ps, terminals, ids, Date.now(), topics)
     // 관제 세션이 있으면 세션 지도를 갱신한다(바뀌었을 때만 쓴다).
-    if (controlOn) void writeControlMap(CONTROL_DIR, snap, null).catch(() => {})
+    if (controlOn) void writeControlMap(CONTROL_DIR, snap, controlSelf).catch(() => {})
     return snap
   }
 
@@ -361,57 +376,112 @@ export default function activate(orca: any): void {
     })
   }
 
-  // 관제: Pod 워커가 Claude 를 직접 띄워 주고받는다. 상태는 pod.control.view 로 화면에 민다.
-  let runtime: ControlRuntime | null = null
-  let controlPid: number | null = null
-  let controlSession: string | null = null
-  let saveControlRef: () => Promise<unknown> = async () => {}
-  const saveControl = () => saveControlRef()
-  let controlInit: Promise<ControlRuntime> | null = null
-  /** 관제 런타임은 하나만. 동시에 불려도 같은 것을 기다린다. */
-  function control(): Promise<ControlRuntime> {
+  // 관제 공급자별로 세션과 기록을 분리한다. 선택만으로 추론 요청을 시작하지 않는다.
+  let runtime: ControlEngine | null = null
+  let provider: ControlProvider = 'claude'
+  let controlInit: Promise<ControlEngine> | null = null
+  let selecting = false
+  let sendingControl = false
+  let controlEpoch = 0
+  let sharedHistory: ChatItem[] = []
+  let pendingHandoff = ''
+  const withProvider = (v: ControlView, selected = provider) => ({ ...v, items: mergeControlHistory(sharedHistory, v.items), provider: selected })
+  function control(): Promise<ControlEngine> {
     if (runtime) return Promise.resolve(runtime)
     controlInit ??= makeControl().finally(() => (controlInit = null))
     return controlInit
   }
-  async function makeControl(): Promise<ControlRuntime> {
-    if (runtime) return runtime
-    const saved = (await orca.storage.get(CONTROL_KEY).catch(() => null)) as { sessionId?: string; cwd?: string; pid?: number } | null
-    // 플러그인을 다시 불러도 예전 워커가 띄운 관제 프로세스는 남는다. 그 프로세스가 맞는지 확인하고 내린다.
+  async function makeControl(): Promise<ControlEngine> {
+    const preferred = await orca.storage.get(CONTROL_PROVIDER_KEY).catch(() => null)
+    provider = isControlProvider(preferred) ? preferred : 'claude'
+    const selected = provider
+    const handoff = await orca.storage.get(CONTROL_HANDOFF_KEY).catch(() => null)
+    sharedHistory = Array.isArray(handoff?.items) ? handoff.items : []
+    pendingHandoff = handoff?.pending && handoff?.to === selected ? controlHandoff(sharedHistory) : ''
+    const storageKey = selected === 'claude' ? CONTROL_KEY : `${CONTROL_KEY}-${selected}`
+    const saved = (await orca.storage.get(storageKey).catch(() => null)) as { sessionId?: string; cwd?: string; pid?: number; terminal?: string; home?: string; items?: ChatItem[] } | null
     if (saved?.pid) {
       const r = await killStaleControl(saved.pid)
       if (r !== '해당 없음') orca.log(`예전 관제 프로세스 ${saved.pid}: ${r}`)
     }
     const snap = await snapshot()
-    const home = pickControlHome(snap)
-    // 이어 가는 세션은 처음 띄운 폴더에서 다시 연다(기록 폴더가 작업 폴더 기준이라).
-    const cwd = saved?.cwd && existsSync(saved.cwd) ? saved.cwd : home ? snap.workspaces[home].path : homedir()
-    const rt = new ControlRuntime(
-      {
-        spawn: (extra) => {
-          controlOn = true
-          const child = spawn(claudeCli(), [...controlArgs(CONTROL_DIR), ...extra], {
-            cwd,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            // 워커 환경에는 USER 가 없어 claude 가 키체인에서 로그인 정보를 못 찾는다.
-            env: { ...process.env, USER: process.env.USER ?? userInfo().username, LOGNAME: process.env.LOGNAME ?? userInfo().username, ELECTRON_RUN_AS_NODE: undefined }
-          })
-          controlPid = child.pid ?? null
-          void saveControl()
+    const home = saved?.home && snap.workspaces[saved.home] ? saved.home : pickControlHome(snap) ?? Object.values(snap.workspaces).sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0]?.id ?? null
+    const cwd = selected === 'codex' ? CONTROL_DIR : saved?.cwd && existsSync(saved.cwd) ? saved.cwd : home ? snap.workspaces[home].path : homedir()
+    const session = saved?.cwd === cwd ? saved.sessionId ?? null : null
+    let sessionId = session
+    let pid: number | null = null
+    let ownedTerminal: string | null = saved?.terminal ?? null
+    controlSelf = selected !== 'claude' && selected !== 'codex' ? ownedTerminal : null
+    let history = Array.isArray(saved?.items) ? saved.items.slice(-240) : []
+    let saving = Promise.resolve()
+    const save = () => {
+      const value = { sessionId, cwd, pid, terminal: ownedTerminal, home, items: history }
+      saving = saving.then(() => orca.storage.set(storageKey, value)).catch(() => {})
+    }
+    const env = { ...process.env, USER: process.env.USER ?? userInfo().username, LOGNAME: process.env.LOGNAME ?? userInfo().username, ELECTRON_RUN_AS_NODE: undefined }
+    const emit = (view: ControlView) => {
+      if (provider !== selected) return
+      if (!view.busy) { history = view.items; save() }
+      orca.panels.post('pod.control.view', withProvider(view, selected))
+    }
+    const saveSession = (id: string | null) => { sessionId = id; save() }
+    await writeControlFiles(CONTROL_DIR, snap, null)
+    let rt: ControlEngine
+    if (selected === 'codex') {
+      rt = new CodexControlRuntime({
+        spawn: () => {
+          const child = spawn(codexCli(), ['app-server', '-c', `cwd=${JSON.stringify(CONTROL_DIR)}`], { cwd, stdio: ['pipe', 'pipe', 'pipe'], env })
+          pid = child.pid ?? null
+          save()
           return child
         },
-        emit: (view) => orca.panels.post('pod.control.view', view),
-        saveSession: (id) => {
-          controlSession = id
-          void saveControl()
+        emit, saveSession,
+        tool: (name, input) => relayTool({ snapshot: () => snapshot(0), cli: args => runCli(args) }, name, input)
+      }, session, history)
+    } else if (selected === 'claude') {
+      rt = new ControlRuntime({
+        spawn: extra => {
+          const child = spawn(claudeCli(), [...controlArgs(CONTROL_DIR), ...extra], { cwd, stdio: ['pipe', 'pipe', 'pipe'], env })
+          pid = child.pid ?? null
+          save()
+          return child
         },
-        history: async (id) => (await readSession(id, cwd)).items
-      },
-      saved?.cwd === cwd ? (saved?.sessionId ?? null) : null
-    )
-    controlSession = saved?.cwd === cwd ? (saved?.sessionId ?? null) : null
-    saveControlRef = () => orca.storage.set(CONTROL_KEY, { sessionId: controlSession, cwd, pid: controlPid }).catch(() => {})
-    await writeControlFiles(CONTROL_DIR, snap, null)
+        emit, saveSession, history: async id => (await readSession(id, cwd)).items.map(visibleControlItem)
+      }, session)
+    } else {
+      const owner = () => { if (!home) throw new CliError('관제를 실행할 워크스페이스가 없습니다'); return home }
+      rt = new TerminalControlRuntime({
+        launch: async prompt => {
+          const response = await runCli(['agent', 'launch', '--agent', selected, '--worktree', worktreeSelector(owner()), '--surface', 'terminal', `--prompt=${prompt}`], 90_000)
+          return controlLaunchResult(response)
+        },
+        send: (terminal, message) => runCli(['terminal', 'send', '--terminal', terminal, `--text=${message}`, '--enter', '--wait-submit', '5']),
+        read: async terminal => {
+          const current = await snapshot(0)
+          const workspace = current.workspaces[owner()]
+          const agent = workspace?.agents.find(a => a.terminal === terminal && a.type === selected)
+          const tab = workspace?.terminals.find(t => t.handle === terminal && t.kind === 'agent' && t.agentType === selected && t.connected)
+          if (!agent && !tab) throw new CliError('관제 터미널을 찾지 못했습니다')
+          const response = await runCli(['terminal', 'read', '--terminal', terminal, '--screen'])
+          return { lines: controlScreenLines(response), working: agent?.state === 'working' }
+        },
+        interrupt: async terminal => {
+          const current = (await snapshot(0)).workspaces[owner()]
+          if (!current?.agents.some(a => a.terminal === terminal && a.type === selected)) throw new CliError('관제 터미널을 찾지 못했습니다')
+          await runCli(['terminal', 'send', '--terminal', terminal, '--interrupt'])
+        },
+        emit,
+        saveTerminal: terminal => { ownedTerminal = terminal; if (provider === selected && runtime === rt) controlSelf = terminal; save() },
+        saveImages: async images => {
+          await mkdir(ATTACH_DIR, { recursive: true, mode: 0o700 })
+          return Promise.all(images.map(async image => {
+            const path = join(ATTACH_DIR, `${randomUUID()}.${IMAGE_EXT[image.type]}`)
+            await writeFile(path, Buffer.from(image.data, 'base64'), { mode: 0o600 })
+            return path
+          }))
+        }
+      }, terminalControlPrompt(join(CONTROL_DIR, 'map.json')), ownedTerminal, history)
+    }
     controlOn = true
     await rt.load()
     runtime = rt
@@ -419,7 +489,52 @@ export default function activate(orca: any): void {
     return rt
   }
 
-  orca.panels.handle('pod.control.view', async () => (await control()).view())
+  orca.panels.handle('pod.control.agents', async () => {
+    const active = new Set(Object.values((await snapshot()).workspaces).flatMap(w => w.agents.map(a => a.type)))
+    const paths = (process.env.PATH ?? '').split(':').filter(Boolean)
+    return CONTROL_AGENTS.map(agent => ({
+      id: agent.id, label: agent.label,
+      mode: agent.id === 'claude' || agent.id === 'codex' ? 'embedded' : 'terminal',
+      detected: active.has(agent.id) || (agent.id === 'claude-agent-teams'
+        ? paths.some(path => existsSync(join(path, 'claude')))
+        : agent.commands.some(command => paths.some(path => existsSync(join(path, command)))))
+    }))
+  })
+  orca.panels.handle('pod.language', async () => {
+    const prefs = await orca.storage.get('pod.prefs')
+    return { default: 'en', preference: prefs?.lang ?? 'en' }
+  })
+  orca.panels.handle('pod.control.open', async () => {
+    if (!controlSelf) throw new CliError('관제 터미널을 찾지 못했습니다')
+    await runCli(['terminal', 'switch', '--terminal', controlSelf])
+    return { opened: true }
+  })
+  orca.panels.handle('pod.control.view', async () => withProvider((await control()).view()))
+  orca.panels.handle('pod.control.provider', async (input: { provider?: unknown }) => {
+    if (!isControlProvider(input?.provider)) throw new CliError('지원하지 않는 관제 에이전트입니다')
+    if (selecting) throw new CliError('관제 에이전트를 변경하는 중입니다')
+    selecting = true
+    try {
+      const rt = await control()
+      if (provider !== input.provider) {
+        const before = rt.view()
+        const from = provider
+        const nextHistory = mergeControlHistory(sharedHistory, before.items, before.live ? [{ k: 'note', text: `미완료 응답 (${from}): ${before.live}`, at: Date.now() }] : [])
+        nextHistory.push({ k: 'note', text: `관제 전환: ${controlAgentLabel(from)} → ${controlAgentLabel(input.provider)}`, at: Date.now() })
+        // 전환 자체는 이전 공급자를 호출하지 않는다. 사용량 한도 오류·응답 중에도 바꿀 수 있다.
+        await orca.storage.set(CONTROL_HANDOFF_KEY, { items: nextHistory, to: input.provider, pending: true })
+        await orca.storage.set(CONTROL_PROVIDER_KEY, input.provider)
+        controlEpoch++
+        await rt.shutdown()
+        runtime = null
+        controlRuntime = null
+        await control()
+      }
+      const view = withProvider(runtime!.view())
+      orca.panels.post('pod.control.view', view)
+      return view
+    } finally { selecting = false }
+  })
   orca.panels.handle('pod.control.send', async (input: { text?: string; images?: unknown }) => {
     const raw: any[] = Array.isArray(input?.images) ? input.images : []
     if (raw.length > 6) throw new CliError('사진은 6장까지 보낼 수 있습니다')
@@ -432,22 +547,38 @@ export default function activate(orca: any): void {
     })
     const body = typeof input?.text === 'string' ? input.text.slice(0, 20_000) : ''
     if (!body.trim() && images.length === 0) throw new CliError('메시지 값이 비어 있습니다')
-    const rt = await control()
-    // 지도를 최신으로 맞춘 뒤 보낸다.
-    await writeControlMap(CONTROL_DIR, await snapshot(), null).catch(() => {})
+    if (selecting) throw new CliError('관제 에이전트를 변경하는 중입니다')
+    if (sendingControl) throw new CliError('관제가 답하는 중입니다')
+    sendingControl = true
+    const epoch = controlEpoch
     try {
-      rt.send(body, images)
-    } catch (e: any) {
-      throw new CliError(e?.message === '작업 중' ? '관제가 답하는 중입니다' : '보내지 못했습니다')
-    }
+      const rt = await control()
+      // 오래된 지도로는 보내지 않는다. 갱신 실패는 이번 요청의 실패로 알린다.
+      await writeControlMap(CONTROL_DIR, await snapshot(0), controlSelf)
+      try {
+        if (epoch !== controlEpoch) throw new CliError('관제 에이전트를 변경하는 중입니다')
+        await rt.send(body, images, pendingHandoff)
+        if (epoch === controlEpoch && pendingHandoff) {
+          pendingHandoff = ''
+          await orca.storage.set(CONTROL_HANDOFF_KEY, { items: sharedHistory, to: provider, pending: false })
+        }
+      } catch (e: any) {
+        throw new CliError(e?.message === '작업 중' ? '관제가 답하는 중입니다' : '보내지 못했습니다')
+      }
+    } finally { sendingControl = false }
     return { sent: true }
   })
   orca.panels.handle('pod.control.stop', async () => {
-    runtime?.stop()
+    await runtime?.stop()
     return { stopped: true }
   })
   orca.panels.handle('pod.control.reset', async () => {
-    ;(await control()).reset()
+    if (selecting || sendingControl) throw new CliError('관제 에이전트를 변경하는 중입니다')
+    const rt = await control()
+    sharedHistory = []
+    pendingHandoff = ''
+    await orca.storage.set(CONTROL_HANDOFF_KEY, { items: [], to: provider, pending: false })
+    await rt.reset()
     return { reset: true }
   })
 

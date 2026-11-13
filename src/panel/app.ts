@@ -1,4 +1,5 @@
 // Pod 패널: 요약 → 지금 움직이는 에이전트 → 디렉토리별 워크스페이스(상태별) / 에이전트 / 그래프.
+import { currentLang, langPersisted, langPref, normalizePref, setLangPref, t, tt, type LangPref } from './i18n'
 import type { AgentView, RepoView, Snapshot, TerminalRef, Topic, WorkspaceView } from '../model'
 import { topicPath, topicRoot } from '../model'
 import { createController, type ControlView } from './controller'
@@ -12,6 +13,7 @@ import {
   agentGlyph,
   agentName,
   ago,
+  agoFull,
   avatar,
   clip,
   duration,
@@ -57,12 +59,22 @@ async function call<T = any>(name: string, input?: unknown, quiet = false): Prom
   try {
     return await orca.plugin.request(name, input, { timeoutMs: 120_000 })
   } catch (e: any) {
-    if (!quiet) toast(e?.message ? clip(String(e.message), 120) : '요청이 실패했습니다', 'err')
+    if (!quiet) toast(e?.message ? tt(clip(String(e.message), 120)) : t('요청이 실패했습니다'), 'err')
     throw e
   }
 }
 
 let lastSig = ''
+
+/** 워커가 한국어로 채운 기본 이름(이름 없는 세션·폴더)을 현재 언어로 바꾼다. 영어 설정일 때만 건드린다. */
+function localizeSnapshot(snap: Snapshot): void {
+  if (currentLang() !== 'en') return
+  for (const w of Object.values(snap.workspaces)) {
+    for (const a of w.agents) a.title = tt(a.title)
+  }
+  for (const r of snap.repos) r.name = tt(r.name)
+  for (const w of Object.values(snap.workspaces)) w.repo = tt(w.repo)
+}
 
 function receive(snap: Snapshot): void {
   // 완료로 바뀐 워크스페이스는 보드에서 축하한다(그래프는 카드가 직접 축하한다).
@@ -76,9 +88,10 @@ function receive(snap: Snapshot): void {
       const x = r && r.width ? r.left + r.width / 2 : window.innerWidth / 2
       const y = r && r.width ? r.top + r.height / 2 : 160
       celebrate(x, y)
-      floatText(x, y, '완료!', 'var(--s-completed)')
+      floatText(x, y, t('완료!'), 'var(--s-completed)')
     }
   }
+  localizeSnapshot(snap)
   state.snap = snap
   // 보드에서 행을 끄는 중이면 다시 그리지 않는다(놓으면 새로 읽는다).
   if (document.body.classList.contains('row-dragging')) return
@@ -104,7 +117,7 @@ async function sync(fresh = false): Promise<void> {
   try {
     receive(await call<Snapshot>('pod.snapshot', { fresh }, true))
   } catch (e: any) {
-    state.error = e?.message ?? '불러오지 못했습니다'
+    state.error = e?.message ?? t('불러오지 못했습니다')
     renderTop()
     if (!state.snap) renderBody()
   } finally {
@@ -118,11 +131,11 @@ async function sync(fresh = false): Promise<void> {
 const ws = (id: string) => state.snap?.workspaces[id]
 
 function openWorkspace(w: WorkspaceView): void {
-  void call('pod.openWorkspace', { id: w.id }).then(() => toast(`${clip(w.name, 28)} 열림`))
+  void call('pod.openWorkspace', { id: w.id }).then(() => toast(t(`{n} 열림`, { n: clip(w.name, 28) })))
 }
 
 function focusAgent(w: WorkspaceView, a: AgentView): void {
-  void call('pod.focusAgent', { id: w.id, agentKey: a.key }).then(() => toast(`${clip(a.title, 28)}(으)로 이동`))
+  void call('pod.focusAgent', { id: w.id, agentKey: a.key }).then(() => toast(t(`{n}(으)로 이동`, { n: clip(a.title, 28) })))
 }
 
 const armed = new Map<string, number>()
@@ -134,12 +147,12 @@ function interrupt(btn: HTMLElement, a: AgentView): void {
   if (armed.has(key)) {
     clearTimeout(armed.get(key))
     armed.delete(key)
-    void call('pod.interrupt', { terminal: a.terminal }).then(() => toast('중단 신호를 보냈습니다'))
+    void call('pod.interrupt', { terminal: a.terminal }).then(() => toast(t('중단 신호를 보냈습니다')))
     return
   }
   const label = btn.lastChild
   const prev = label?.textContent ?? ''
-  if (label) label.textContent = '한 번 더'
+  if (label) label.textContent = t('한 번 더')
   btn.classList.add('danger')
   armed.set(
     key,
@@ -156,17 +169,17 @@ function setStatus(w: WorkspaceView, status: string): void {
 }
 
 function editComment(w: WorkspaceView): void {
-  const area = h('textarea', { rows: 3, placeholder: '메모' }) as HTMLTextAreaElement
+  const area = h('textarea', { rows: 3, placeholder: t('메모') }) as HTMLTextAreaElement
   area.value = w.comment
   openSheet({
-    title: '메모 편집',
+    title: t('메모 편집'),
     sub: w.name,
     body: [h('label', { class: 'field' }, area)],
-    submitLabel: '저장',
+    submitLabel: t('저장'),
     submitIcon: 'check',
     onSubmit: async () => {
       await call('pod.setComment', { id: w.id, comment: area.value.trim() })
-      toast('메모를 저장했습니다')
+      toast(t('메모를 저장했습니다'))
     }
   })
 }
@@ -188,27 +201,27 @@ function agentChoice(initial: string): { el: HTMLElement; value: () => string } 
       agentName(type)
     )
   )
-  return { el: h('div', { class: 'field' }, h('span', null, '에이전트'), h('div', { class: 'choice' }, buttons)), value: () => value }
+  return { el: h('div', { class: 'field' }, h('span', null, t('에이전트')), h('div', { class: 'choice' }, buttons)), value: () => value }
 }
 
 function launchAgent(w: WorkspaceView, initial = 'claude'): void {
   const choice = agentChoice(initial)
-  const area = h('textarea', { rows: 4, placeholder: '첫 지시 (비워 두면 빈 세션)' }) as HTMLTextAreaElement
+  const area = h('textarea', { rows: 4, placeholder: t('첫 지시 (비워 두면 빈 세션)') }) as HTMLTextAreaElement
   openSheet({
-    title: '에이전트 시작',
+    title: t('에이전트 시작'),
     sub: w.name,
-    body: [choice.el, h('label', { class: 'field' }, h('span', null, '지시'), area)],
-    submitLabel: '시작',
+    body: [choice.el, h('label', { class: 'field' }, h('span', null, t('지시')), area)],
+    submitLabel: t('시작'),
     submitIcon: 'bot',
     onSubmit: async () => {
       await call('pod.launchAgent', { id: w.id, agent: choice.value(), prompt: area.value.trim() || undefined })
-      toast(`${agentName(choice.value())} 시작`)
+      toast(t(`{n} 시작`, { n: agentName(choice.value()) }))
     }
   })
 }
 
 function createWorkspace(repo: RepoView, parent?: WorkspaceView, topicId?: string | null, from?: Element | null): void {
-  const name = h('input', { placeholder: '예: 결제-오류-수정' }) as HTMLInputElement
+  const name = h('input', { placeholder: t('예: 결제-오류-수정') }) as HTMLInputElement
   const choice = agentChoice('claude')
   let withAgent = true
   const sw = h('span', { class: 'switch on' })
@@ -224,15 +237,15 @@ function createWorkspace(repo: RepoView, parent?: WorkspaceView, topicId?: strin
       }
     },
     sw,
-    '에이전트와 함께 시작'
+    t('에이전트와 함께 시작')
   )
-  const area = h('textarea', { rows: 3, placeholder: '첫 지시' }) as HTMLTextAreaElement
-  const agentBlock = h('div', null, choice.el, h('label', { class: 'field' }, h('span', null, '지시'), area))
+  const area = h('textarea', { rows: 3, placeholder: t('첫 지시') }) as HTMLTextAreaElement
+  const agentBlock = h('div', null, choice.el, h('label', { class: 'field' }, h('span', null, t('지시')), area))
   openSheet({
-    title: parent ? '하위 워크스페이스 만들기' : '새 워크스페이스',
-    sub: [repo.name, parent ? `${parent.name} 아래` : null, topicId ? repo.topics.find((t) => t.id === topicId)?.name : null].filter(Boolean).join(' · '),
-    body: [h('label', { class: 'field' }, h('span', null, '이름'), name), h('div', { style: { marginTop: '10px' } }, toggle), agentBlock],
-    submitLabel: '만들기',
+    title: parent ? t('하위 워크스페이스 만들기') : t('새 워크스페이스'),
+    sub: [repo.name, parent ? t(`{name} 아래`, { name: parent.name }) : null, topicId ? repo.topics.find((t) => t.id === topicId)?.name : null].filter(Boolean).join(' · '),
+    body: [h('label', { class: 'field' }, h('span', null, t('이름')), name), h('div', { style: { marginTop: '10px' } }, toggle), agentBlock],
+    submitLabel: t('만들기'),
     submitIcon: 'plus',
     canSubmit: () => name.value.trim().length > 0,
     onSubmit: async () => {
@@ -244,7 +257,7 @@ function createWorkspace(repo: RepoView, parent?: WorkspaceView, topicId?: strin
         agent: withAgent ? choice.value() : undefined,
         prompt: withAgent ? area.value.trim() || undefined : undefined
       })
-      toast(`${name.value.trim()} 만들었습니다`)
+      toast(t(`{n} 만들었습니다`, { n: name.value.trim() }))
       // 새로 만든 워크스페이스를 바로 작업실로 연다.
       if (r.id) {
         await sync(true)
@@ -261,10 +274,10 @@ const detailHost = () => (state.view === 'graph' ? stage : null)
 function sessionMenu(anchor: Element | null, w: WorkspaceView): void {
   const go = (kind: 'claude' | 'codex' | 'terminal') => () => detail.openWithSession(w.id, kind, anchor, { host: detailHost() })
   const items: MenuItem[] = [
-    { section: '새 세션' },
-    { label: 'Claude', icon: 'bot', hint: '에이전트', onSelect: go('claude') },
-    { label: 'Codex', icon: 'bot', hint: '에이전트', onSelect: go('codex') },
-    { label: '터미널', icon: 'terminal', hint: '셸', onSelect: go('terminal') }
+    { section: t('새 세션') },
+    { label: 'Claude', icon: 'bot', hint: t('에이전트'), onSelect: go('claude') },
+    { label: 'Codex', icon: 'bot', hint: t('에이전트'), onSelect: go('codex') },
+    { label: t('터미널'), icon: 'terminal', hint: t('셸'), onSelect: go('terminal') }
   ]
   if (anchor?.isConnected) openMenu(anchor, items)
   else openMenu({ x: window.innerWidth / 2 - 100, y: 160 }, items)
@@ -272,13 +285,13 @@ function sessionMenu(anchor: Element | null, w: WorkspaceView): void {
 
 function addSection(repo: RepoView, parentId?: string): void {
   const parent = parentId ? repo.topics.find((t) => t.id === parentId) : undefined
-  const name = h('input', { placeholder: parent ? '예: 상품 관리' : '예: 결제' }) as HTMLInputElement
-  const keywords = h('input', { placeholder: '쉼표로 구분, 예: 결제, payment' }) as HTMLInputElement
+  const name = h('input', { placeholder: parent ? t('예: 상품 관리') : t('예: 결제') }) as HTMLInputElement
+  const keywords = h('input', { placeholder: t('쉼표로 구분, 예: 결제, payment') }) as HTMLInputElement
   openSheet({
-    title: parent ? '새 하위 주제' : '새 주제',
+    title: parent ? t('새 하위 주제') : t('새 주제'),
     sub: parent ? `${repo.name} › ${topicPath(repo.topics, parent.id)}` : repo.name,
-    body: [h('label', { class: 'field' }, h('span', null, '이름'), name), h('label', { class: 'field' }, h('span', null, '분류 키워드'), keywords)],
-    submitLabel: '추가',
+    body: [h('label', { class: 'field' }, h('span', null, t('이름')), name), h('label', { class: 'field' }, h('span', null, t('분류 키워드')), keywords)],
+    submitLabel: t('추가'),
     submitIcon: 'plus',
     canSubmit: () => name.value.trim().length > 0,
     onSubmit: async () => {
@@ -289,7 +302,7 @@ function addSection(repo: RepoView, parentId?: string): void {
       await call('pod.saveTopics', { repoId: repo.id, topics })
       state.groupBy = 'topic'
       savePrefs()
-      toast(`${name.value.trim()} 주제를 만들었습니다`)
+      toast(t(`{n} 주제를 만들었습니다`, { n: name.value.trim() }))
       void sync(true)
     }
   })
@@ -297,7 +310,7 @@ function addSection(repo: RepoView, parentId?: string): void {
 
 function openPR(w: WorkspaceView): void {
   if (!w.pr?.url) return
-  void Promise.resolve(orca.shell.openExternal(w.pr.url)).catch(() => toast('링크를 열지 못했습니다', 'err'))
+  void Promise.resolve(orca.shell.openExternal(w.pr.url)).catch(() => toast(t('링크를 열지 못했습니다'), 'err'))
 }
 
 function statusGrid(w: WorkspaceView): HTMLElement {
@@ -338,31 +351,31 @@ function topicGrid(w: WorkspaceView, topics: Topic[]): HTMLElement {
       h('i'),
       name
     )
-  return h('div', { class: 'status-grid' }, topics.map((t) => opt(t.id, topicPath(topics, t.id))), opt(null, '자동'))
+  return h('div', { class: 'status-grid' }, topics.map((t) => opt(t.id, topicPath(topics, t.id))), opt(null, t('자동')))
 }
 
 function statusMenu(at: Element, w: WorkspaceView): void {
-  openMenu(at, [{ section: '상태' }, { custom: statusGrid(w) }])
+  openMenu(at, [{ section: t('상태') }, { custom: statusGrid(w) }])
 }
 
 function workspaceMenu(at: { x: number; y: number } | Element, w: WorkspaceView, owner?: Element): void {
   const repo = state.snap?.repos.find((r) => r.id === w.repoId)
   const grid = statusGrid(w)
   const items: MenuItem[] = [
-    { label: '작업실', icon: 'terminal', onSelect: () => detail.open(w.id, undefined, owner ?? null, { host: detailHost() }) },
-    { label: '세션 추가', icon: 'plus', onSelect: () => sessionMenu(owner ?? (at instanceof Element ? at : null), w) },
-    { label: 'Orca에서 열기', icon: 'open', onSelect: () => openWorkspace(w) },
-    { label: 'Claude 시작', icon: 'bot', onSelect: () => launchAgent(w, 'claude') },
-    { label: 'Codex 시작', icon: 'bot', onSelect: () => launchAgent(w, 'codex') },
-    ...(repo ? [{ label: '하위 워크스페이스', icon: 'sub', onSelect: () => createWorkspace(repo, w) }] : []),
-    { label: '관제에 보내기', icon: 'sparkle', onSelect: () => controller.insert(w) },
-    { label: '메모 편집', icon: 'edit', onSelect: () => editComment(w) },
-    ...(w.unread ? [{ label: '읽음으로 표시', icon: 'eye', onSelect: () => void call('pod.markRead', { id: w.id }) }] : []),
-    ...(w.pr?.url ? [{ label: `PR #${w.pr.number} 열기`, icon: 'pr', onSelect: () => openPR(w) }] : []),
+    { label: t('작업실'), icon: 'terminal', onSelect: () => detail.open(w.id, undefined, owner ?? null, { host: detailHost() }) },
+    { label: t('세션 추가'), icon: 'plus', onSelect: () => sessionMenu(owner ?? (at instanceof Element ? at : null), w) },
+    { label: t('Orca에서 열기'), icon: 'open', onSelect: () => openWorkspace(w) },
+    { label: t('Claude 시작'), icon: 'bot', onSelect: () => launchAgent(w, 'claude') },
+    { label: t('Codex 시작'), icon: 'bot', onSelect: () => launchAgent(w, 'codex') },
+    ...(repo ? [{ label: t('하위 워크스페이스'), icon: 'sub', onSelect: () => createWorkspace(repo, w) }] : []),
+    { label: t('관제에 보내기'), icon: 'sparkle', onSelect: () => controller.insert(w) },
+    { label: t('메모 편집'), icon: 'edit', onSelect: () => editComment(w) },
+    ...(w.unread ? [{ label: t('읽음으로 표시'), icon: 'eye', onSelect: () => void call('pod.markRead', { id: w.id }) }] : []),
+    ...(w.pr?.url ? [{ label: t(`PR #{number} 열기`, { number: w.pr.number }), icon: 'pr', onSelect: () => openPR(w) }] : []),
     'sep',
-    { section: '상태' },
+    { section: t('상태') },
     { custom: grid },
-    ...(repo && repo.topics.length ? (['sep', { section: '주제' }, { custom: topicGrid(w, repo.topics) }] as MenuItem[]) : [])
+    ...(repo && repo.topics.length ? (['sep', { section: t('주제') }, { custom: topicGrid(w, repo.topics) }] as MenuItem[]) : [])
   ]
   openMenu(at, items, owner)
 }
@@ -372,11 +385,11 @@ function workspaceMenu(at: { x: number; y: number } | Element, w: WorkspaceView,
 const tails = new Map<string, { at: number; lines: string[] | null }>()
 
 function tailBlock(terminal: string): HTMLElement {
-  const pre = h('pre', { class: 'tail loading' }, '터미널 불러오는 중…')
+  const pre = h('pre', { class: 'tail loading' }, t('터미널 불러오는 중…'))
   const cached = tails.get(terminal)
   const setTail = (lines: string[] | null) => {
     if (!lines || lines.length === 0) {
-      pre.textContent = '출력 없음'
+      pre.textContent = t('출력 없음')
       return
     }
     pre.classList.remove('loading')
@@ -393,7 +406,7 @@ function tailBlock(terminal: string): HTMLElement {
         setTail(r.lines)
       })
       .catch(() => {
-        pre.textContent = '터미널을 읽지 못했습니다'
+        pre.textContent = t('터미널을 읽지 못했습니다')
       })
   }
   return pre
@@ -404,33 +417,33 @@ function agentCard(wsId: string, key: string): HTMLElement | null {
   const a = w?.agents.find((x) => x.key === key)
   if (!w || !a) return null
   const rows: HTMLElement[] = []
-  if (a.prompt) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '마지막 요청'), h('div', { class: 'v' }, clip(a.prompt, 400))))
+  if (a.prompt) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('마지막 요청')), h('div', { class: 'v' }, clip(a.prompt, 400))))
   if (a.tool && (a.state === 'working' || a.state === 'blocked'))
     rows.push(
       h(
         'div',
         { class: 'hc-row' },
-        h('div', { class: 'k' }, a.state === 'blocked' ? '승인을 기다리는 도구' : '지금 하는 일'),
+        h('div', { class: 'k' }, a.state === 'blocked' ? t('승인을 기다리는 도구') : t('지금 하는 일')),
         h('div', { class: 'tool' }, h('b', null, a.tool.name), h('code', null, clip(a.tool.input, 240)))
       )
     )
   if (a.lastMessage)
-    rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '마지막 답변'), h('div', { class: 'v' }, clip(a.lastMessage, 500))))
-  if (a.terminal && a.state !== 'done') rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '터미널'), tailBlock(a.terminal)))
+    rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('마지막 답변')), h('div', { class: 'v' }, clip(a.lastMessage, 500))))
+  if (a.terminal && a.state !== 'done') rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('터미널')), tailBlock(a.terminal)))
   const meta: HTMLElement[] = []
-  if (a.subagents > 0) meta.push(h('span', null, icon('agents'), `하위 에이전트 ${a.subagents}`))
-  meta.push(h('span', null, icon(a.surface === 'chat' ? 'message' : 'terminal'), a.surface === 'chat' ? '대화창' : '터미널'))
-  if (a.interrupted) meta.push(h('span', null, icon('stop'), '중단됨'))
+  if (a.subagents > 0) meta.push(h('span', null, icon('agents'), t(`하위 에이전트 {subagents}`, { subagents: a.subagents })))
+  meta.push(h('span', null, icon(a.surface === 'chat' ? 'message' : 'terminal'), a.surface === 'chat' ? t('대화창') : t('터미널')))
+  if (a.interrupted) meta.push(h('span', null, icon('stop'), t('중단됨')))
   rows.push(h('div', { class: 'hc-meta' }, meta))
 
   const actions: HTMLElement[] = [
-    h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), '작업실'),
+    h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), t('작업실')),
     h('button', { class: 'pill-btn', onClick: () => focusAgent(w, a) }, icon('open'), 'Orca'),
-    h('button', { class: 'pill-btn', onClick: () => (hideHover(), controller.insert(w, a)) }, icon('sparkle'), '관제에 보내기')
+    h('button', { class: 'pill-btn', onClick: () => sendToControl(w, a) }, icon('sparkle'), t('관제에 보내기'))
   ]
   if (a.terminal && a.state !== 'done') {
     if (a.state === 'working') {
-      const stop = h('button', { class: 'pill-btn danger' }, icon('stop'), h('span', null, '중단'))
+      const stop = h('button', { class: 'pill-btn danger' }, icon('stop'), h('span', null, t('중단')))
       stop.addEventListener('click', () => interrupt(stop, a))
       actions.push(stop)
     }
@@ -451,7 +464,7 @@ function agentCard(wsId: string, key: string): HTMLElement | null {
           { class: 'hc-kicker' },
           h('span', { class: 'state-pill', 'data-state': a.state }, h('i'), AGENT_STATE_LABEL[a.state]),
           agentName(a.type),
-          a.since && a.state !== 'done' ? h('span', { 'data-dur': a.since }, `· ${duration(a.since)}째`) : null
+          a.since && a.state !== 'done' ? h('span', { 'data-dur': a.since }, t(`· {n}째`, { n: duration(a.since) })) : null
         ),
         h('div', { class: 'hc-title' }, a.title),
         h('div', { class: 'hc-sub' }, `${w.repo} · ${w.name}`)
@@ -462,8 +475,8 @@ function agentCard(wsId: string, key: string): HTMLElement | null {
   )
 }
 
-const PR_STATE: Record<string, string> = { open: '열림', merged: '머지됨', closed: '닫힘', draft: '초안' }
-const CHECKS: Record<string, string> = { success: '체크 통과', failure: '체크 실패', pending: '체크 진행 중', neutral: '체크 중립' }
+const PR_STATE: Record<string, string> = { open: t('열림'), merged: t('머지됨'), closed: t('닫힘'), draft: t('초안') }
+const CHECKS: Record<string, string> = { success: t('체크 통과'), failure: t('체크 실패'), pending: t('체크 진행 중'), neutral: t('체크 중립') }
 
 /* ---------- 열린 탭 ---------- */
 
@@ -474,11 +487,11 @@ function tabIcon(t: TerminalRef): HTMLElement {
   return h('span', { class: `tb-ic ${t.kind}` }, icon(t.kind === 'setup' ? 'gear' : 'terminal'))
 }
 
-function tabState(w: WorkspaceView, t: TerminalRef): { label: string; cls: string } {
-  if (!t.connected) return { label: '끝남', cls: 'dead' }
-  const a = w.agents.find((x) => x.terminal === t.handle)
+function tabState(w: WorkspaceView, tab: TerminalRef): { label: string; cls: string } {
+  if (!tab.connected) return { label: t('끝남'), cls: 'dead' }
+  const a = w.agents.find((x) => x.terminal === tab.handle)
   if (a) return { label: AGENT_STATE_LABEL[a.state], cls: a.state }
-  return { label: t.kind === 'setup' ? '설정 중' : '실행 중', cls: 'live' }
+  return { label: tab.kind === 'setup' ? t('설정 중') : t('실행 중'), cls: 'live' }
 }
 
 /** 탭을 닫는다. 닫히는 줄은 접히며 사라지고 조각이 흩어진다. */
@@ -490,12 +503,34 @@ async function closeTabs(w: WorkspaceView | null, handles: string[], els: Elemen
   }
   try {
     const r = await call<{ closed: number; failed: string[] }>('pod.closeTerminals', { terminals: handles })
-    toast(r.failed.length ? `탭 ${r.closed}개를 닫았고 ${r.failed.length}개는 못 닫았습니다` : `탭 ${r.closed}개를 닫았습니다`, r.failed.length ? 'err' : 'ok')
+    toast(r.failed.length ? t(`탭 {closed}개를 닫았고 {n}개는 못 닫았습니다`, { closed: r.closed, n: r.failed.length }) : t(`탭 {closed}개를 닫았습니다`, { closed: r.closed }), r.failed.length ? 'err' : 'ok')
   } finally {
     void sync(true)
     refreshHover()
   }
   void w
+}
+
+/** 세션 참조를 관제 입력창에 넣는다. 호버 카드는 닫는다. */
+function sendToControl(w: WorkspaceView, a: AgentView): void {
+  hideHover()
+  controller.insert(w, a)
+}
+
+/** 세션 목록 줄의 「관제에 넣기」 버튼(셸에는 보낼 수 없어 에이전트 세션에만). */
+function refButton(w: WorkspaceView, a: AgentView): HTMLElement {
+  return h(
+    'button',
+    {
+      class: 'tb-ref',
+      title: t('관제 입력창에 넣기'),
+      onClick: (ev: Event) => {
+        ev.stopPropagation()
+        sendToControl(w, a)
+      }
+    },
+    icon('sparkle')
+  )
 }
 
 /** 대화창(채팅) 세션 중 아직 열려 있는 것. 터미널이 없어 닫을 수는 없다. */
@@ -513,32 +548,35 @@ function tabsBlock(w: WorkspaceView): HTMLElement | null {
       { class: 'tb-row chat', title: a.lastMessage ? clip(a.lastMessage, 200) : a.title },
       h('span', { class: 'tb-glyph chat', 'data-type': a.type }, agentGlyph(a.type)),
       h('span', { class: 'tb-title' }, a.title),
-      h('span', { class: 'tb-kind' }, '대화창'),
-      h('span', { class: `tb-state ${a.state}` }, AGENT_STATE_LABEL[a.state])
+      h('span', { class: 'tb-kind' }, t('대화창')),
+      h('span', { class: `tb-state ${a.state}` }, AGENT_STATE_LABEL[a.state]),
+      refButton(w, a)
     )
     row.addEventListener('click', () => detail.open(w.id, a.key, row, { host: detailHost() }))
     return row
   })
-  const rows = list.map((t) => {
-    const st = tabState(w, t)
-    const x = h('button', { class: 'tb-x', title: t.connected ? '닫기 (두 번 누르기)' : '닫기' }, icon('x'))
+  const agentOf = (tb: (typeof list)[number]) => (tb.connected ? w.agents.find((ag) => ag.terminal === tb.handle && ag.state !== 'done') : undefined)
+  const rows = list.map((tb) => {
+    const st = tabState(w, tb)
+    const x = h('button', { class: 'tb-x', title: tb.connected ? t('닫기 (두 번 누르기)') : t('닫기') }, icon('x'))
     const row = h(
       'div',
-      { class: `tb-row${t.connected ? '' : ' dead'}`, title: t.lastLine || t.title },
-      tabIcon(t),
-      h('span', { class: 'tb-title' }, t.title || '터미널'),
-      h('span', { class: 'tb-kind' }, t.kind === 'setup' ? '초기 설정' : t.kind === 'agent' ? '터미널' : '셸'),
+      { class: `tb-row${tb.connected ? '' : ' dead'}`, title: tb.lastLine || tb.title },
+      tabIcon(tb),
+      h('span', { class: 'tb-title' }, tb.title || t('터미널')),
+      h('span', { class: 'tb-kind' }, tb.kind === 'setup' ? t('초기 설정') : tb.kind === 'agent' ? t('터미널') : t('셸')),
       h('span', { class: `tb-state ${st.cls}` }, st.label),
+      agentOf(tb) ? refButton(w, agentOf(tb)!) : null,
       x
     )
     row.addEventListener('click', () => {
-      const a = w.agents.find((ag) => ag.terminal === t.handle)
-      detail.open(w.id, a ? a.key : `t:${t.handle}`, row, { host: detailHost() })
+      const a = w.agents.find((ag) => ag.terminal === tb.handle)
+      detail.open(w.id, a ? a.key : `tb:${tb.handle}`, row, { host: detailHost() })
     })
     let armed = 0
     x.addEventListener('click', (ev) => {
       ev.stopPropagation()
-      if (t.connected && !armed) {
+      if (tb.connected && !armed) {
         x.classList.add('armed')
         armed = window.setTimeout(() => {
           armed = 0
@@ -547,7 +585,7 @@ function tabsBlock(w: WorkspaceView): HTMLElement | null {
         return
       }
       window.clearTimeout(armed)
-      void closeTabs(w, [t.handle], [row])
+      void closeTabs(w, [tb.handle], [row])
     })
     return row
   })
@@ -566,7 +604,7 @@ function tabsBlock(w: WorkspaceView): HTMLElement | null {
           }
         },
         icon('broom'),
-        `끝난 탭 ${dead.length}개 닫기`
+        t(`끝난 탭 {n}개 닫기`, { n: dead.length })
       )
     : null
   return h('div', { class: 'tb' }, chatRows, rows, sweep)
@@ -576,7 +614,7 @@ function tabsBlock(w: WorkspaceView): HTMLElement | null {
 function tabsCard(wsId: string): HTMLElement | null {
   const w = ws(wsId)
   if (!w) return null
-  return h('div', null, h('div', { class: 'hc-kicker' }, `세션 ${w.terminals.length + chatSessions(w).length}`), h('div', { class: 'hc-title' }, w.name), tabsBlock(w))
+  return h('div', null, h('div', { class: 'hc-kicker' }, t(`세션 {n}`, { n: w.terminals.length + chatSessions(w).length })), h('div', { class: 'hc-title' }, w.name), tabsBlock(w))
 }
 
 function workspaceCard(wsId: string): HTMLElement | null {
@@ -592,14 +630,14 @@ function workspaceCard(wsId: string): HTMLElement | null {
         w.pr.title ? h('div', { class: 'v' }, w.pr.title) : null
       )
     )
-  if (w.comment) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '메모'), h('div', { class: 'v' }, w.comment)))
+  if (w.comment) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('메모')), h('div', { class: 'v' }, w.comment)))
   const shown = w.agents.filter((a) => a.state !== 'done').concat(w.agents.filter((a) => a.state === 'done').slice(0, 3))
   if (shown.length)
     rows.push(
       h(
         'div',
         { class: 'hc-row' },
-        h('div', { class: 'k' }, `에이전트 ${w.agents.length}`),
+        h('div', { class: 'k' }, t(`에이전트 {n}`, { n: w.agents.length })),
         h(
           'div',
           { class: 'hc-agents' },
@@ -616,14 +654,14 @@ function workspaceCard(wsId: string): HTMLElement | null {
       )
     )
   const tabs = tabsBlock(w)
-  if (tabs) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, `세션 ${w.terminals.length + chatSessions(w).length}`), tabs))
+  if (tabs) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t(`세션 {n}`, { n: w.terminals.length + chatSessions(w).length })), tabs))
   const parent = w.parentId ? ws(w.parentId) : null
   rows.push(
     h(
       'div',
       { class: 'hc-meta' },
-      h('span', null, icon('terminal'), `터미널 ${w.liveTerminals}`),
-      w.lastActivityAt ? h('span', null, `마지막 활동 ${ago(w.lastActivityAt)} 전`) : null,
+      h('span', null, icon('terminal'), t(`터미널 {liveTerminals}`, { liveTerminals: w.liveTerminals })),
+      w.lastActivityAt ? h('span', null, t(`마지막 활동 {when}`, { when: agoFull(w.lastActivityAt) })) : null,
       parent ? h('span', null, icon('sub'), parent.name) : null
     ),
     h('div', { class: 'hc-path' }, w.path)
@@ -647,9 +685,9 @@ function workspaceCard(wsId: string): HTMLElement | null {
     h(
       'div',
       { class: 'hc-actions' },
-      h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, undefined, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), '작업실'),
+      h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, undefined, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), t('작업실')),
       h('button', { class: 'pill-btn', onClick: () => openWorkspace(w) }, icon('open'), 'Orca'),
-      h('button', { class: 'pill-btn', onClick: (ev: Event) => workspaceMenu(ev.currentTarget as Element, w) }, icon('more'), '더보기')
+      h('button', { class: 'pill-btn', onClick: (ev: Event) => workspaceMenu(ev.currentTarget as Element, w) }, icon('more'), t('더보기'))
     )
   )
 }
@@ -686,11 +724,12 @@ const narrowing = () => state.filter !== null || state.query.trim() !== ''
 
 /* ---------- 상단 ---------- */
 
-const refreshBtn = h('button', { class: 'icon-btn', title: '새로고침', onClick: () => void sync(true) }, icon('refresh'))
-const syncEl = h('span', { class: 'sync' }, h('span', { class: 'dot' }), h('span', { class: 'txt' }, '연결 중'))
+const refreshBtn = h('button', { class: 'icon-btn', title: t('새로고침'), onClick: () => void sync(true) }, icon('refresh'))
+const langBtn = h('button', { class: 'pill-btn', title: t('언어'), onClick: () => langMenu() }, t('언어'), ' · ', langPref() === 'auto' ? `${t('자동')} (${currentLang().toUpperCase()})` : currentLang().toUpperCase())
+const syncEl = h('span', { class: 'sync' }, h('span', { class: 'dot' }), h('span', { class: 'txt' }, t('연결 중')))
 const viewSeg = h('div', { class: 'seg', role: 'tablist' })
 const searchInput = h('input', {
-  placeholder: '검색',
+  placeholder: t('검색'),
   onInput: (ev: Event) => {
     state.query = (ev.target as HTMLInputElement).value
     renderBody()
@@ -747,8 +786,8 @@ function renderRepoBar(): void {
       h('span', { class: 'rc' }, count)
     )
   repoBar.replaceChildren(
-    chip(null, '전체', total, '', '모든 디렉토리'),
-    ...info.map((x) => chip(x.r.id, x.r.name, x.active, x.signal, `${x.r.name} · 표시 ${x.active} · 전체 ${x.r.workspaceIds.length}`))
+    chip(null, t('전체'), total, '', t('모든 디렉토리')),
+    ...info.map((x) => chip(x.r.id, x.r.name, x.active, x.signal, t(`{name} · 표시 {active} · 전체 {n}`, { name: x.r.name, active: x.active, n: x.r.workspaceIds.length })))
   )
 }
 const body = h('div', { class: 'body' })
@@ -761,7 +800,7 @@ function toggleStatus(st: string): void {
   renderBody()
 }
 
-const statusBtn = h('button', { class: 'filter-btn', title: '보일 상태 고르기' })
+const statusBtn = h('button', { class: 'filter-btn', title: t('보일 상태 고르기') })
 
 function knownStatuses(): string[] {
   return [...new Set([...(state.snap?.statuses ?? []), 'todo', 'in-progress', 'in-review', 'long-running', 'on-hold', 'completed'])]
@@ -770,7 +809,7 @@ function knownStatuses(): string[] {
 function renderStatusBtn(): void {
   const hiddenCount = knownStatuses().filter((st) => state.hidden.has(st)).length
   statusBtn.classList.toggle('active', hiddenCount > 0)
-  fill(statusBtn, icon('filter'), '상태', hiddenCount ? h('span', { class: 'badge' }, `${hiddenCount} 숨김`) : null)
+  fill(statusBtn, icon('filter'), t('상태'), hiddenCount ? h('span', { class: 'badge' }, t(`{hiddenCount} 숨김`, { hiddenCount })) : null)
 }
 
 function statusFilterMenu(): void {
@@ -813,7 +852,7 @@ function statusFilterMenu(): void {
               draw()
             }
           },
-          '모두 보기'
+          t('모두 보기')
         ),
         h(
           'button',
@@ -827,21 +866,21 @@ function statusFilterMenu(): void {
               draw()
             }
           },
-          '완료·보류 숨기기'
+          t('완료·보류 숨기기')
         )
       )
     )
   }
   draw()
-  openMenu(statusBtn, [{ section: '보일 상태' }, { custom: panel }])
+  openMenu(statusBtn, [{ section: t('보일 상태') }, { custom: panel }])
 }
 
 statusBtn.addEventListener('click', statusFilterMenu)
 
 const VIEWS: { id: View; label: string; icon: string }[] = [
-  { id: 'board', label: '보드', icon: 'board' },
-  { id: 'agents', label: '에이전트', icon: 'agents' },
-  { id: 'graph', label: '그래프', icon: 'graph' }
+  { id: 'board', label: t('보드'), icon: 'board' },
+  { id: 'agents', label: t('에이전트'), icon: 'agents' },
+  { id: 'graph', label: t('그래프'), icon: 'graph' }
 ]
 
 function setView(v: View): void {
@@ -857,15 +896,30 @@ function setView(v: View): void {
   renderBody()
 }
 
+/** 언어 설정 메뉴. 고르면 저장한 뒤 그 언어로 화면을 다시 불러온다. */
+function langMenu(): void {
+  const cur = langPref()
+  const item = (value: LangPref, label: string): MenuItem => ({
+    label,
+    icon: cur === value ? 'check' : undefined,
+    onSelect: () => {
+      if (cur === value) return
+      setLangPref(value)
+      void savePrefs().then(() => location.reload())
+    }
+  })
+  openMenu(langBtn, [{ section: t('언어') }, item('auto', t('자동')), item('ko', '한국어'), item('en', 'English')], langBtn) // i18n-skip: 언어 이름은 번역하지 않는다
+}
+
 function renderTop(): void {
   const snap = state.snap
   const stale = state.lastSync && Date.now() - state.lastSync > 20_000
   syncEl.className = `sync${state.error ? ' err' : stale ? ' stale' : ''}`
   ;(syncEl.querySelector('.txt') as HTMLElement).textContent = state.error
-    ? '연결 끊김'
+    ? t('연결 끊김')
     : state.lastSync
-      ? `실시간 · ${ago(state.lastSync)}`
-      : '연결 중'
+      ? t(`실시간 · {n}`, { n: ago(state.lastSync) })
+      : t('연결 중')
 
   viewSeg.replaceChildren(
     ...VIEWS.map((v) =>
@@ -910,7 +964,7 @@ function sessionLines(w: WorkspaceView): HTMLElement | null {
       hoverable(el, () => agentCard(w.id, a.key), 500, `sess:${a.key}`)
       return el
     }),
-    live.length > shown.length ? h('div', { class: 'sess-more' }, `세션 ${live.length - shown.length}개 더`) : null
+    live.length > shown.length ? h('div', { class: 'sess-more' }, t(`세션 {n}개 더`, { n: live.length - shown.length })) : null
   )
 }
 
@@ -940,7 +994,7 @@ function topicTag(w: WorkspaceView): HTMLElement | null {
 }
 
 function workspaceRow(w: WorkspaceView, opts: { child?: boolean; parentHint?: string; showTopic?: boolean } = {}): HTMLElement {
-  const menuBtn = h('button', { class: 'menu-btn', title: '메뉴' }, icon('more'))
+  const menuBtn = h('button', { class: 'menu-btn', title: t('메뉴') }, icon('more'))
   const row = h(
     'div',
     {
@@ -1015,7 +1069,7 @@ function cappedRows(ids: string[], snap: Snapshot, gkey: string, showTopic = fal
       }
     },
     icon('unfold'),
-    `${ids.length - ROW_CAP}개 더 보기`
+    t(`{n}개 더 보기`, { n: ids.length - ROW_CAP })
   )
   return [...groupRows(ids.slice(0, ROW_CAP), snap, showTopic), more]
 }
@@ -1061,7 +1115,7 @@ function repoSection(repo: RepoView, snap: Snapshot): HTMLElement | null {
       }
     },
     h('span', { class: 'folder' }, icon('folder')),
-    h('div', { class: 'name' }, h('b', null, repo.name), h('span', null, `${active} 표시 · 전체 ${repo.workspaceIds.length}`)),
+    h('div', { class: 'name' }, h('b', null, repo.name), h('span', null, t(`{active} 표시 · 전체 {n}`, { active, n: repo.workspaceIds.length }))),
     h(
       'div',
       { style: { display: 'flex', alignItems: 'center', gap: '2px' } },
@@ -1069,7 +1123,7 @@ function repoSection(repo: RepoView, snap: Snapshot): HTMLElement | null {
         'button',
         {
           class: 'icon-btn',
-          title: '새 워크스페이스',
+          title: t('새 워크스페이스'),
           onClick: (ev: Event) => {
             ev.stopPropagation()
             createWorkspace(repo)
@@ -1096,7 +1150,7 @@ function repoSection(repo: RepoView, snap: Snapshot): HTMLElement | null {
             'button',
             {
               class: `legend-item${state.hidden.has(st) ? ' off' : ''}`,
-              title: state.hidden.has(st) ? `${statusLabel(st)} 보이기` : `${statusLabel(st)} 숨기기`,
+              title: state.hidden.has(st) ? t(`{n} 보이기`, { n: statusLabel(st) }) : t(`{n} 숨기기`, { n: statusLabel(st) }),
               onClick: (ev: Event) => {
                 ev.stopPropagation()
                 toggleStatus(st)
@@ -1168,7 +1222,7 @@ function repoTools(repo: RepoView): HTMLElement {
             renderBody()
           }
         },
-        g === 'status' ? '상태별' : '주제별'
+        g === 'status' ? t('상태별') : t('주제별')
       )
     )
   )
@@ -1180,14 +1234,14 @@ function repoTools(repo: RepoView): HTMLElement {
         'button',
         {
           class: `mini-btn${busy ? ' busy' : ''}`,
-          title: 'claude 로 주제를 다시 뽑습니다',
+          title: t('claude 로 주제를 다시 뽑습니다'),
           onClick: (ev: Event) => {
             ev.stopPropagation()
             extractTopics(repo)
           }
         },
         icon('sparkle'),
-        busy ? '주제 뽑는 중…' : repo.topics.length ? 'AI로 다시 뽑기' : 'AI로 주제 뽑기'
+        busy ? t('주제 뽑는 중…') : repo.topics.length ? t('AI로 다시 뽑기') : t('AI로 주제 뽑기')
       ),
       h(
         'button',
@@ -1199,7 +1253,7 @@ function repoTools(repo: RepoView): HTMLElement {
           }
         },
         icon('edit'),
-        '편집'
+        t('편집')
       )
     )
   }
@@ -1211,7 +1265,7 @@ function extractTopics(repo: RepoView): void {
   extracting.add(repo.id)
   renderBody()
   void call<{ topics: number; assigned: number }>('pod.suggestTopics', { repoId: repo.id })
-    .then((r) => toast(`주제 ${r.topics}개로 묶었습니다`))
+    .then((r) => toast(t(`주제 {topics}개로 묶었습니다`, { topics: r.topics })))
     .catch(() => {})
     .finally(() => {
       extracting.delete(repo.id)
@@ -1224,16 +1278,16 @@ function editTopics(repo: RepoView): void {
   type Row = { id?: string; name: HTMLInputElement; keywords: HTMLInputElement; el: HTMLElement }
   const rows: Row[] = []
   const list = h('div', { class: 'topic-edit' })
-  const addRow = (t?: Topic) => {
-    const name = h('input', { placeholder: '주제 이름' }) as HTMLInputElement
-    const keywords = h('input', { placeholder: '키워드, 쉼표로 구분' }) as HTMLInputElement
-    name.value = t?.name ?? ''
-    keywords.value = t?.keywords.join(', ') ?? ''
-    const row: Row = { id: t?.id, name, keywords, el: h('div') }
+  const addRow = (tp?: Topic) => {
+    const name = h('input', { placeholder: t('주제 이름') }) as HTMLInputElement
+    const keywords = h('input', { placeholder: t('키워드, 쉼표로 구분') }) as HTMLInputElement
+    name.value = tp?.name ?? ''
+    keywords.value = tp?.keywords.join(', ') ?? ''
+    const row: Row = { id: tp?.id, name, keywords, el: h('div') }
     row.el = h(
       'div',
       { class: 'item' },
-      h('i', { style: { background: topicColor(t?.id ?? name.value) } }),
+      h('i', { style: { background: topicColor(tp?.id ?? name.value) } }),
       name,
       keywords,
       h(
@@ -1241,7 +1295,7 @@ function editTopics(repo: RepoView): void {
         {
           type: 'button',
           class: 'icon-btn',
-          title: '삭제',
+          title: t('삭제'),
           onClick: () => {
             rows.splice(rows.indexOf(row), 1)
             row.el.remove()
@@ -1257,7 +1311,7 @@ function editTopics(repo: RepoView): void {
   repo.topics.forEach((t) => addRow(t))
   if (!repo.topics.length) addRow()
   openSheet({
-    title: '주제 편집',
+    title: t('주제 편집'),
     sub: repo.name,
     body: [
       list,
@@ -1265,10 +1319,10 @@ function editTopics(repo: RepoView): void {
         'button',
         { type: 'button', class: 'mini-btn', style: { marginTop: '8px' }, onClick: () => addRow().name.focus() },
         icon('plus'),
-        '주제 추가'
+        t('주제 추가')
       )
     ],
-    submitLabel: '저장',
+    submitLabel: t('저장'),
     submitIcon: 'check',
     onSubmit: async () => {
       const topics = rows.map((r) => ({
@@ -1278,7 +1332,7 @@ function editTopics(repo: RepoView): void {
         keywords: r.keywords.value.split(/[,，]/).map((k) => k.trim()).filter(Boolean)
       }))
       await call('pod.saveTopics', { repoId: repo.id, topics })
-      toast('주제를 저장했습니다')
+      toast(t('주제를 저장했습니다'))
     }
   })
 }
@@ -1296,12 +1350,12 @@ function topicGroups(repo: RepoView, ids: string[], snap: Snapshot): HTMLElement
         'div',
         { class: 'topic-empty' },
         icon('tag'),
-        h('div', null, '주제가 아직 없어요'),
+        h('div', null, t('주제가 아직 없어요')),
         h(
           'div',
           { class: 'row' },
-          h('button', { class: 'pill-btn primary', disabled: busy, onClick: () => extractTopics(repo) }, icon('sparkle'), busy ? '뽑는 중…' : 'AI로 주제 뽑기'),
-          h('button', { class: 'pill-btn', onClick: () => editTopics(repo) }, icon('edit'), '직접 만들기')
+          h('button', { class: 'pill-btn primary', disabled: busy, onClick: () => extractTopics(repo) }, icon('sparkle'), busy ? t('뽑는 중…') : t('AI로 주제 뽑기')),
+          h('button', { class: 'pill-btn', onClick: () => editTopics(repo) }, icon('edit'), t('직접 만들기'))
         )
       )
     ]
@@ -1320,7 +1374,7 @@ function topicGroups(repo: RepoView, ids: string[], snap: Snapshot): HTMLElement
     }
   }
   walk(null, 0)
-  groups.push({ id: null, name: '기타', depth: 0 })
+  groups.push({ id: null, name: t('기타'), depth: 0 })
   for (const g of groups) {
     const inT = ids.filter((id) => snap.workspaces[id].topic === g.id)
     if (!inT.length) continue
@@ -1356,7 +1410,7 @@ function topicGroups(repo: RepoView, ids: string[], snap: Snapshot): HTMLElement
             onClick: toggle(gkey, state.closedGroups),
             onContextmenu: (ev: MouseEvent) => {
               ev.preventDefault()
-              openMenu({ x: ev.clientX, y: ev.clientY }, [{ label: '주제 편집', icon: 'edit', onSelect: () => editTopics(repo) }])
+              openMenu({ x: ev.clientX, y: ev.clientY }, [{ label: t('주제 편집'), icon: 'edit', onSelect: () => editTopics(repo) }])
             }
           },
           h('span', { class: 'tag' }, h('i'), g.name),
@@ -1393,7 +1447,7 @@ function liveAgentCard(w: WorkspaceView, a: AgentView): HTMLElement {
         }
       },
       icon('terminal'),
-      '작업실'
+      t('작업실')
     ),
     h(
       'button',
@@ -1410,7 +1464,7 @@ function liveAgentCard(w: WorkspaceView, a: AgentView): HTMLElement {
   ]
   if (a.terminal) {
     if (a.state === 'working') {
-      const stop = h('button', { class: 'pill-btn danger' }, icon('stop'), h('span', null, '중단'))
+      const stop = h('button', { class: 'pill-btn danger' }, icon('stop'), h('span', null, t('중단')))
       stop.addEventListener('click', (ev) => {
         ev.stopPropagation()
         interrupt(stop, a)
@@ -1422,7 +1476,7 @@ function liveAgentCard(w: WorkspaceView, a: AgentView): HTMLElement {
     a.state === 'working' && a.tool
       ? h('div', { class: 'doing' }, h('b', null, a.tool.name), h('code', null, clip(a.tool.input, 120)))
       : a.state === 'blocked' && a.tool
-        ? h('div', { class: 'doing' }, h('b', null, `${a.tool.name} 승인 요청`), h('code', null, clip(a.tool.input, 120)))
+        ? h('div', { class: 'doing' }, h('b', null, t(`{name} 승인 요청`, { name: a.tool.name })), h('code', null, clip(a.tool.input, 120)))
         : a.state !== 'working'
         ? h('div', { class: 'doing' }, h('b', null, AGENT_STATE_LABEL[a.state]), h('code', null, clip(a.lastMessage || a.prompt, 120)))
         : null
@@ -1469,26 +1523,26 @@ function renderBoard(snap: Snapshot): HTMLElement[] {
     .sort((x, y) => (x.a.state === 'working' ? 1 : 0) - (y.a.state === 'working' ? 1 : 0) || x.a.since - y.a.since)
   const idle = pairs.filter(({ a }) => a.state === 'idle').sort((x, y) => y.a.updatedAt - x.a.updatedAt)
 
-  out.push(h('div', { class: 'section-title' }, '지금', h('span', { class: 'count' }, live.length || '')))
+  out.push(h('div', { class: 'section-title' }, t('지금'), h('span', { class: 'count' }, live.length || '')))
   if (live.length) out.push(h('div', { class: 'live-list' }, live.map(({ w, a }) => liveAgentCard(w, a))))
-  else out.push(h('div', { class: 'empty' }, '작업 중인 에이전트가 없어요'))
+  else out.push(h('div', { class: 'empty' }, t('작업 중인 에이전트가 없어요')))
   if (idle.length) {
     out.push(
       h(
         'div',
         { class: 'idle-strip' },
         idle.slice(0, 8).map(({ w, a }) => idleChip(w, a)),
-        idle.length > 8 ? h('button', { class: 'chip', onClick: () => setView('agents') }, h('span', null, `+${idle.length - 8} 더보기`)) : null
+        idle.length > 8 ? h('button', { class: 'chip', onClick: () => setView('agents') }, h('span', null, t(`+{n} 더보기`, { n: idle.length - 8 }))) : null
       )
     )
   }
 
   const scoped = state.repo ? snap.repos.filter((r) => r.id === state.repo) : snap.repos
   const repos = scoped.map((r) => repoSection(r, snap)).filter((x): x is HTMLElement => x !== null)
-  if (!state.repo) out.push(h('div', { class: 'section-title' }, '디렉토리', h('span', { class: 'count' }, snap.repos.length)))
+  if (!state.repo) out.push(h('div', { class: 'section-title' }, t('디렉토리'), h('span', { class: 'count' }, snap.repos.length)))
   else out.push(h('div', { style: { height: '4px' } }))
   if (repos.length) out.push(h('div', { class: state.repo ? 'repos single' : 'repos' }, repos))
-  else out.push(h('div', { class: 'empty' }, '조건에 맞는 워크스페이스가 없어요'))
+  else out.push(h('div', { class: 'empty' }, t('조건에 맞는 워크스페이스가 없어요')))
   return out
 }
 
@@ -1525,11 +1579,11 @@ function renderAgents(snap: Snapshot): HTMLElement[] {
     out.push(h('div', { class: 'section-title' }, title, h('span', { class: 'count' }, list.length)))
     out.push(h('div', { class: cls || 'repo', style: cls ? undefined : { padding: '4px' } }, list.map(({ w, a }) => render(w, a))))
   }
-  block('확인 필요', attention, liveAgentCard, 'live-list')
-  block('작업 중', working, liveAgentCard, 'live-list')
-  block('대기 중인 세션', idle, agentRow)
-  block('최근 24시간 종료', done.slice(0, 30), agentRow)
-  if (!out.length) out.push(h('div', { class: 'empty', style: { marginTop: '14px' } }, '표시할 에이전트가 없어요'))
+  block(t('확인 필요'), attention, liveAgentCard, 'live-list')
+  block(t('작업 중'), working, liveAgentCard, 'live-list')
+  block(t('대기 중인 세션'), idle, agentRow)
+  block(t('최근 24시간 종료'), done.slice(0, 30), agentRow)
+  if (!out.length) out.push(h('div', { class: 'empty', style: { marginTop: '14px' } }, t('표시할 에이전트가 없어요')))
   return out
 }
 
@@ -1537,7 +1591,7 @@ function renderAgents(snap: Snapshot): HTMLElement[] {
 
 function detailOpenUrl(url: string): void {
   if (!/^https?:\/\//.test(url)) return
-  void Promise.resolve(orca.shell.openExternal(url)).catch(() => toast('링크를 열지 못했습니다', 'err'))
+  void Promise.resolve(orca.shell.openExternal(url)).catch(() => toast(t('링크를 열지 못했습니다'), 'err'))
 }
 
 const detail = createDetail({
@@ -1562,7 +1616,7 @@ const detail = createDetail({
       kind === 'terminal'
         ? await call<{ terminal: string | null }>('pod.newTerminal', { id: w.id })
         : await call<{ terminal: string | null }>('pod.launchAgent', { id: w.id, agent: kind })
-    toast(kind === 'terminal' ? '터미널을 열었습니다' : `${agentName(kind)} 시작`)
+    toast(kind === 'terminal' ? t('터미널을 열었습니다') : t(`{n} 시작`, { n: agentName(kind) }))
     await sync(true)
     return r.terminal
   }
@@ -1584,6 +1638,7 @@ const graph = createGraph({
   hoverWorkspace: (el, id) => hoverable(el, () => workspaceCard(id), 450, `gw:${id}`),
   hoverAgent: (el, id, key) => hoverable(el, () => agentCard(id, key), 250, `ga:${key}`),
   hoverTabs: (el, id) => hoverable(el, () => tabsCard(id), 150, `gt:${id}`),
+  sendToControl: (w, a) => sendToControl(w, a),
   deadTabs: () =>
     Object.values(state.snap?.workspaces ?? {})
       .filter((w) => inScope(w))
@@ -1656,7 +1711,7 @@ function renderBody(): void {
   if (!snap) {
     body.replaceChildren(
       state.error
-        ? h('div', { class: 'banner' }, h('b', null, '불러오지 못했습니다'), h('div', { style: { marginTop: '4px', color: 'var(--muted)' } }, state.error))
+        ? h('div', { class: 'banner' }, h('b', null, t('불러오지 못했습니다')), h('div', { style: { marginTop: '4px', color: 'var(--muted)' } }, tt(state.error)))
         : h('div', null, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }))
     )
     return
@@ -1679,15 +1734,16 @@ function tick(): void {
   })
   document.querySelectorAll<HTMLElement>('[data-dur]').forEach((el) => {
     const v = duration(Number(el.dataset.dur), now)
-    el.textContent = el.closest('.hc-kicker') ? `· ${v}째` : v
+    el.textContent = el.closest('.hc-kicker') ? t(`· {v}째`, { v }) : v
   })
   renderTop()
 }
 
 /* ---------- 설정 저장 ---------- */
 
-function savePrefs(): void {
+function savePrefs(): Promise<void> {
   const prefs = {
+    lang: langPref(),
     view: state.view,
     hidden: [...state.hidden],
     collapsedRepos: [...state.collapsedRepos],
@@ -1697,13 +1753,21 @@ function savePrefs(): void {
     groupBy: state.groupBy,
     graphSections: state.graphSections
   }
-  void Promise.resolve(orca.storage?.set?.(PREFS_KEY, prefs)).catch(() => {})
+  return Promise.resolve(orca.storage?.set?.(PREFS_KEY, prefs)).then(() => undefined, () => undefined)
 }
 
 async function loadPrefs(): Promise<void> {
   try {
     const p = await orca.storage?.get?.(PREFS_KEY)
     if (!p || typeof p !== 'object') return
+    // 저장된 언어가 지금 화면 언어와 다르면 그 언어로 다시 불러온다(다시 읽혀야만 — 저장이 안 되면 무한 반복하므로 건너뜀).
+    if (p.lang !== undefined && normalizePref(p.lang) !== langPref()) {
+      setLangPref(p.lang)
+      if (langPersisted()) {
+        location.reload()
+        return
+      }
+    }
     if (p.view === 'board' || p.view === 'agents' || p.view === 'graph') state.view = p.view
     if (Array.isArray(p.hidden)) state.hidden = new Set(p.hidden.filter((x: unknown) => typeof x === 'string'))
     state.collapsedRepos = new Set(Array.isArray(p.collapsedRepos) ? p.collapsedRepos : [])
@@ -1725,7 +1789,7 @@ function mount(): void {
   const top = h(
     'header',
     { class: 'top' },
-    h('div', { class: 'brand' }, h('span', { class: 'mark' }), h('h1', null, 'Pod'), syncEl, h('span', { class: 'spacer' }), refreshBtn),
+    h('div', { class: 'brand' }, h('span', { class: 'mark' }), h('h1', null, 'Pod'), syncEl, h('span', { class: 'spacer' }), langBtn, refreshBtn),
     h('div', { class: 'toolbar' }, viewSeg, h('label', { class: 'search' }, icon('search'), searchInput, h('kbd', null, '/')), statusBtn),
     repoBar
   )

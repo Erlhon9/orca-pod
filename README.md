@@ -18,7 +18,7 @@ Pod brings your repositories, topics, workspaces, and agent sessions onto one ma
 
 ### Session window
 
-Read a conversation and send a follow-up without navigating away from the graph.
+Read a conversation without navigating away from the graph. Send follow-ups to terminal-backed sessions; Orca chat sessions continue in their native chat window.
 
 ![Session window with a short fictional conversation](images/session.jpg)
 
@@ -40,7 +40,7 @@ See sessions that need attention first, followed by workspaces grouped by topic 
 
 - Orca **1.4.248 or later** on macOS.
 - The `orca` command available in your terminal.
-- A signed-in Claude Code CLI for Control and AI topic suggestions.
+- An installed and signed-in agent CLI for Control. Claude Code is required for AI topic suggestions.
 
 ## Install
 
@@ -72,18 +72,16 @@ Review the permissions shown by Orca before approving the plugin. Keep a develop
 
 Claude terminal sessions can appear as conversations using their local transcripts. Codex sessions and other terminals use the terminal view when a conversation view is unavailable. Open a session in Orca when you need its full native interface.
 
-Control can relay instructions to Claude and Codex terminal sessions. Claude-to-Claude chat messaging uses Claude Code messages. A message being accepted or queued does not mean the receiving agent has finished the task.
+Control can relay instructions to supported agent terminal sessions. Claude-to-Claude chat messaging uses Claude Code messages. A message being accepted or queued does not mean the receiving agent has finished the task.
 
 Shell terminals are not message targets for Control.
 
-## Development preview
+## Control agents and language
 
-The working branch also includes:
+- **Choose a Control agent.** Select from the Orca agent catalog, with detected agents listed first. Claude and Codex have embedded adapters; other agents run in an Orca terminal using their existing installation, login, and permissions. Recent conversation context follows you when you switch.
+- **English-first UI.** English is the default for new users. The visible Language button shows the active setting; Korean and an automatic language option remain available. Existing choices are preserved.
 
-- **Claude / Codex Control switching.** Continue with the other provider when usage runs out, carrying recent conversation context without calling the previous provider or automatically resending old instructions.
-- **English-first UI.** English is the default for new users; Korean and an automatic language option remain available.
-
-These controls appear in the demo screenshots. The screenshot and documentation releases do not publish these runtime changes. Codex Control currently reads chats' latest request and reply but cannot send messages to chat sessions. Both providers can send to supported terminal sessions.
+Terminal-based Control shows the agent’s terminal output in the panel and provides an Open in Orca button for login and approvals. An agent being detected does not prove it is logged in or has available usage. Codex Control currently reads chats' latest request and reply but cannot send messages to chat sessions. Claude and Codex Control can both send to supported terminal sessions. Switching agents carries recent visible conversation context without requiring a reply from the previous provider, so you can switch when its usage is exhausted.
 
 ## Permissions and data
 

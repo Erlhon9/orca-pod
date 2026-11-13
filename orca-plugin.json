@@ -2,32 +2,32 @@
   "manifestVersion": 2,
   "id": "pod",
   "name": "Pod",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "See and steer every Orca workspace and agent session on one map",
   "cover": {
     "path": "images/graph.jpg",
-    "alt": "Graph with fictional example workspaces grouped by topic"
+    "alt": "Pod graph: a repository in the middle, topics around it, workspace cards with live sessions, and the control bar at the bottom"
   },
   "screenshots": [
     {
       "path": "images/graph.jpg",
-      "alt": "Graph with fictional example workspaces grouped by topic",
+      "alt": "Graph of workspaces grouped by topic with session states",
       "caption": "Workspaces on one map, grouped by topic"
     },
     {
       "path": "images/session.jpg",
-      "alt": "Session window with a generic fictional conversation",
-      "caption": "Read and steer a session without leaving the map"
+      "alt": "Session window showing a fictional terminal conversation",
+      "caption": "Read a session and send instructions to supported terminals"
     },
     {
       "path": "images/control.jpg",
-      "alt": "Control showing a generic example exchange",
-      "caption": "Coordinate sessions from the Control bar"
+      "alt": "Control bar with an agent selector and a fictional coordination exchange",
+      "caption": "Choose your Control agent and coordinate sessions"
     },
     {
       "path": "images/board.jpg",
-      "alt": "Board with generic workspace names and agent states",
-      "caption": "See what needs your attention"
+      "alt": "Board view with urgent sessions on top and workspaces grouped by topic",
+      "caption": "Board: what needs you now, then everything by topic"
     }
   ],
   "engines": {

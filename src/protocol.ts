@@ -1,11 +1,22 @@
 // 패널 <-> 워커 사이의 요청·알림 목록. 양쪽이 같은 이름을 쓰도록 한 곳에 적어 둔다.
 import type { Snapshot } from './model'
 import type { ChatItem } from './transcript'
+import type { ControlView } from './runtime'
+import type { ControlProvider } from './relay'
+import type { ControlAgentOption } from './control-agents'
 
 export {}
 
 declare module 'orca' {
   interface PluginRequests {
+    'pod.control.agents': { input: {}; output: ControlAgentOption[] }
+    'pod.control.open': { input: {}; output: { opened: true } }
+    'pod.language': { input: {}; output: { default: 'en'; preference: string } }
+    'pod.control.view': { input: undefined | {}; output: ControlView & { provider: ControlProvider } }
+    'pod.control.provider': { input: { provider: ControlProvider }; output: ControlView & { provider: ControlProvider } }
+    'pod.control.send': { input: { text?: string; images?: { type: string; data: string }[] }; output: { sent: true } }
+    'pod.control.stop': { input: {}; output: { stopped: true } }
+    'pod.control.reset': { input: {}; output: { reset: true } }
     /** 전체 워크스페이스·에이전트 스냅샷. fresh 면 캐시를 건너뛴다. */
     'pod.snapshot': { input: { fresh?: boolean } | undefined; output: Snapshot }
     'pod.openWorkspace': { input: { id: string }; output: { opened: true } }

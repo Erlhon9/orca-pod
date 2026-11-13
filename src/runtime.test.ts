@@ -47,6 +47,17 @@ function setup(sessionId: string | null = null) {
 
 const line = (o: unknown) => `${JSON.stringify(o)}\n`
 
+test('Codex의 인계 문맥은 Claude 입력에 포함하고 화면에는 사용자가 쓴 말만 보인다', () => {
+  const { rt, procs } = setup()
+  try {
+    rt.send('이어서 확인해줘', [], 'Previous Codex context: target term_a, delivery queued, do not resend')
+    const sent = JSON.parse(procs[0].written.join(''))
+    assert.ok(sent.message.content[0].text.includes('Previous Codex context'))
+    assert.ok(sent.message.content[0].text.endsWith('이어서 확인해줘'))
+    assert.equal(rt.view().items[0].text, '이어서 확인해줘')
+  } finally { rt.shutdown() }
+})
+
 test('보내면 사진과 글을 stream-json 한 줄로 쓰고, 조각은 live 로, 완성되면 대화 항목이 된다', async () => {
   const { rt, procs, spawned, saved } = setup()
   rt.send('세션 정리해줘', [{ type: 'image/png', data: 'AAAA' }])

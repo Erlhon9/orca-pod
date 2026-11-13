@@ -1,4 +1,5 @@
 // DOM 을 만드는 작은 도우미, 아이콘, 표시용 문구.
+import { t } from './i18n'
 import type { AgentState, AgentView } from '../model'
 
 type Child = Node | string | number | null | undefined | false | Child[]
@@ -128,21 +129,45 @@ export function avatar(agent: Pick<AgentView, 'type' | 'state'>, size: '' | 'sm'
   return h('span', { class: `av ${size}`, 'data-type': agent.type, 'data-state': agent.state }, agentGlyph(agent.type))
 }
 
+/** 워크스페이스 상태 이름. getter 라서 언어가 바뀌어도 그때의 문구를 돌려준다. */
 export const STATUS_LABEL: Record<string, string> = {
-  todo: '할 일',
-  'in-progress': '진행 중',
-  'in-review': '리뷰 중',
-  'long-running': '장기 실행',
-  'on-hold': '보류',
-  completed: '완료'
+  get todo() {
+    return t('할 일')
+  },
+  get 'in-progress'() {
+    return t('진행 중')
+  },
+  get 'in-review'() {
+    return t('리뷰 중')
+  },
+  get 'long-running'() {
+    return t('장기 실행')
+  },
+  get 'on-hold'() {
+    return t('보류')
+  },
+  get completed() {
+    return t('완료')
+  }
 }
 
+/** 에이전트 상태 이름(getter, 위와 같은 이유). */
 export const AGENT_STATE_LABEL: Record<AgentState, string> = {
-  working: '작업 중',
-  blocked: '승인 대기',
-  waiting: '답변 대기',
-  idle: '대기',
-  done: '종료'
+  get working() {
+    return t('작업 중')
+  },
+  get blocked() {
+    return t('승인 대기')
+  },
+  get waiting() {
+    return t('답변 대기')
+  },
+  get idle() {
+    return t('대기')
+  },
+  get done() {
+    return t('종료')
+  }
 }
 
 export const AGENT_NAME: Record<string, string> = { claude: 'Claude', codex: 'Codex' }
@@ -165,26 +190,33 @@ export function statusColor(id: string): string {
 export function ago(at: number, now = Date.now()): string {
   if (!at) return ''
   const sec = Math.max(0, Math.round((now - at) / 1000))
-  if (sec < 45) return '방금'
+  if (sec < 45) return t('방금')
   const min = Math.round(sec / 60)
-  if (min < 60) return `${min}분`
+  if (min < 60) return t(`{min}분`, { min })
   const hr = Math.round(min / 60)
-  if (hr < 24) return `${hr}시간`
+  if (hr < 24) return t(`{hr}시간`, { hr })
   const day = Math.round(hr / 24)
-  if (day < 30) return `${day}일`
-  return `${Math.round(day / 30)}개월`
+  if (day < 30) return t(`{day}일`, { day })
+  return t(`{n}개월`, { n: Math.round(day / 30) })
+}
+
+/** 「3분 전」 꼴. 45초 미만은 「방금 전」. 한국어 «마지막 활동 …» 문구에 쓴다. */
+export function agoFull(at: number, now = Date.now()): string {
+  if (!at) return ''
+  if (Math.round(Math.max(0, now - at) / 1000) < 45) return t('방금 전')
+  return t('{x} 전', { x: ago(at, now) })
 }
 
 /** 상태가 얼마나 이어졌는지. 1분 미만이면 초 단위. */
 export function duration(at: number, now = Date.now()): string {
   if (!at) return ''
   const sec = Math.max(0, Math.round((now - at) / 1000))
-  if (sec < 60) return `${sec}초`
+  if (sec < 60) return t(`{sec}초`, { sec })
   const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}분`
+  if (min < 60) return t(`{min}분`, { min })
   const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}시간 ${min % 60}분`
-  return `${Math.floor(hr / 24)}일`
+  if (hr < 24) return t(`{hr}시간 {n}분`, { hr, n: min % 60 })
+  return t(`{n}일`, { n: Math.floor(hr / 24) })
 }
 
 export function clip(text: string, max: number): string {

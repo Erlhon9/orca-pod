@@ -1,4 +1,5 @@
 // 입력창 사진 첨부. 붙여넣기·끌어놓기·고르기로 받아 두었다가, 보낼 때 워커가 임시 파일로 저장한 경로를 지시 앞에 붙인다.
+import { t } from './i18n'
 import { h, icon } from './ui'
 
 type Call = <T = any>(name: string, input?: unknown, quiet?: boolean) => Promise<T>
@@ -66,7 +67,7 @@ export function attachments(
   const tray = h('div', { class: 'attach-tray', hidden: true })
   // 문서에 붙이지 않은 파일 입력도 click() 으로 고르기 창이 열린다.
   const input = h('input', { type: 'file', accept: [...TYPES].join(','), multiple: true }) as HTMLInputElement
-  const button = h('button', { class: 'attach', title: '사진 붙이기' }, icon('image')) as HTMLButtonElement
+  const button = h('button', { class: 'attach', title: t('사진 붙이기') }, icon('image')) as HTMLButtonElement
 
   const render = () => {
     tray.hidden = items.length === 0
@@ -76,7 +77,7 @@ export function attachments(
           'div',
           { class: 'attach-item' },
           h('img', { src: it.thumb, alt: '' }),
-          h('button', { class: 'attach-x', title: '빼기', onClick: () => remove(it) }, icon('x'))
+          h('button', { class: 'attach-x', title: t('빼기'), onClick: () => remove(it) }, icon('x'))
         )
       )
     )
@@ -101,7 +102,7 @@ export function attachments(
       }
       items.push({ file: f, thumb: URL.createObjectURL(f) })
     }
-    if (skipped) opts.toast('붙일 수 없는 파일', 'err')
+    if (skipped) opts.toast(t('붙일 수 없는 파일'), 'err')
     render()
   }
 

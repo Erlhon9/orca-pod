@@ -2,6 +2,7 @@
 // 글자 단위로 바로 흘러나오고, 사진은 파일 없이 그대로 넘긴다. 대화는 세션 id 로 이어 간다(--resume).
 import type { ChildProcess } from 'node:child_process'
 import { emptyState, feed, type ChatItem, type TranscriptState } from './transcript'
+import { visibleControlItem } from './control-handoff'
 
 export interface ControlImage {
   type: string
@@ -175,6 +176,7 @@ export class ControlRuntime {
         if (o.type === 'assistant') this.live = ''
         // 기록 파일과 같은 모양이라 같은 파서를 쓴다(시각만 붙인다).
         this.state = feed(this.state, `${JSON.stringify({ ...o, timestamp: new Date(this.now()).toISOString() })}\n`)
+        this.state.items = this.state.items.map(visibleControlItem)
         this.changed()
       } else if (o.type === 'result') {
         this.busy = false
@@ -196,7 +198,7 @@ export class ControlRuntime {
     this.idleTimer.unref?.()
   }
 
-  send(text: string, images: ControlImage[] = []): void {
+  send(text: string, images: ControlImage[] = [], context = ''): void {
     const body = text.trim()
     if (!body && images.length === 0) throw new Error('빈 메시지')
     // 한 번에 한 요청만. 겹쳐 보내면 첫 답이 끝날 때 작업 중 표시가 꺼져 버린다.
@@ -204,7 +206,7 @@ export class ControlRuntime {
     const p = this.ensure()
     const content = [
       ...images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.type, data: im.data } })),
-      ...(body ? [{ type: 'text', text: body }] : [])
+      ...((body || context) ? [{ type: 'text', text: context ? `${context}\n\nCurrent user request:\n${body}` : body }] : [])
     ]
     p.stdin?.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content } })}\n`)
     this.push({ k: 'user', text: body, at: this.now(), images: images.length })

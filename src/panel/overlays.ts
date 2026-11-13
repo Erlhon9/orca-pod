@@ -1,4 +1,5 @@
 // 떠 있는 것들: 호버 카드, 메뉴, 아래에서 올라오는 시트, 토스트.
+import { t } from './i18n'
 import { h, icon } from './ui'
 
 /* ---------- 호버 카드 ---------- */
@@ -84,22 +85,26 @@ card.addEventListener('mouseleave', () => {
 /* ---------- 메뉴 ---------- */
 
 export type MenuItem =
-  | { label: string; icon?: string; hint?: string; danger?: boolean; onSelect: () => void }
+  | { label: string; icon?: string; hint?: string; danger?: boolean; checked?: boolean; onSelect: () => void }
   | { section: string }
   | { custom: HTMLElement }
   | 'sep'
 
 let menuEl: HTMLElement | null = null
 let menuOwner: Element | null = null
+let menuPlace: (() => void) | null = null
 
-export function closeMenu(): void {
+export function closeMenu(restoreFocus = false): void {
   menuEl?.remove()
   menuEl = null
+  menuPlace = null
   menuOwner?.classList.remove('menu-open')
+  if (menuOwner?.hasAttribute('aria-expanded')) menuOwner.setAttribute('aria-expanded', 'false')
+  if (restoreFocus && menuOwner instanceof HTMLElement && menuOwner.isConnected) menuOwner.focus()
   menuOwner = null
 }
 
-export function openMenu(at: { x: number; y: number } | Element, items: MenuItem[], owner?: Element): void {
+export function openMenu(at: { x: number; y: number } | Element, items: MenuItem[], owner?: Element, options?: { maxHeight?: number; keyboard?: boolean }): void {
   closeMenu()
   hideNow()
   const el = h(
@@ -113,11 +118,12 @@ export function openMenu(at: { x: number; y: number } | Element, items: MenuItem
         'button',
         {
           class: 'mi',
-          role: 'menuitem',
+          role: item.checked === undefined ? 'menuitem' : 'menuitemradio',
+          'aria-checked': item.checked === undefined ? undefined : String(item.checked),
           style: item.danger ? { color: 'var(--a-blocked)' } : undefined,
           onClick: (ev: Event) => {
             ev.stopPropagation()
-            closeMenu()
+            closeMenu(options?.keyboard ?? false)
             item.onSelect()
           }
         },
@@ -132,29 +138,59 @@ export function openMenu(at: { x: number; y: number } | Element, items: MenuItem
   if (owner) {
     menuOwner = owner
     owner.classList.add('menu-open')
+    if (owner.hasAttribute('aria-expanded')) owner.setAttribute('aria-expanded', 'true')
   }
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  let x: number
-  let y: number
-  if (at instanceof Element) {
-    const r = at.getBoundingClientRect()
-    x = r.right - el.offsetWidth
-    y = r.bottom + 4
-    if (y + el.offsetHeight > vh - 8) y = r.top - el.offsetHeight - 4
-  } else {
-    x = at.x
-    y = at.y
-    if (y + el.offsetHeight > vh - 8) y = at.y - el.offsetHeight
+  const position = () => {
+    if (at instanceof Element && !at.isConnected) return closeMenu()
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    if (options?.maxHeight) {
+      el.style.maxHeight = `${Math.max(0, Math.min(options.maxHeight, vh - 16))}px`
+      el.style.overflowY = 'auto'
+      el.style.overscrollBehavior = 'contain'
+    }
+    let x: number
+    let y: number
+    if (at instanceof Element) {
+      const r = at.getBoundingClientRect()
+      x = r.right - el.offsetWidth
+      y = r.bottom + 4
+      if (y + el.offsetHeight > vh - 8) y = r.top - el.offsetHeight - 4
+    } else {
+      x = at.x
+      y = at.y
+      if (y + el.offsetHeight > vh - 8) y = at.y - el.offsetHeight
+    }
+    el.style.left = `${Math.max(8, Math.min(x, vw - el.offsetWidth - 8))}px`
+    el.style.top = `${Math.max(8, Math.min(y, vh - el.offsetHeight - 8))}px`
   }
-  el.style.left = `${Math.max(8, Math.min(x, vw - el.offsetWidth - 8))}px`
-  el.style.top = `${Math.max(8, Math.min(y, vh - el.offsetHeight - 8))}px`
+  menuPlace = position
+  position()
+  if (options?.keyboard) {
+    const buttons = [...el.querySelectorAll<HTMLButtonElement>('button.mi')]
+    el.addEventListener('keydown', ev => {
+      const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
+      let next = index
+      if (ev.key === 'ArrowDown') next = (index + 1) % buttons.length
+      else if (ev.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length
+      else if (ev.key === 'Home') next = 0
+      else if (ev.key === 'End') next = buttons.length - 1
+      else return
+      ev.preventDefault()
+      ev.stopPropagation()
+      buttons[next]?.focus({ preventScroll: true })
+      buttons[next]?.scrollIntoView({ block: 'nearest' })
+    })
+    const selected = el.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? buttons[0]
+    selected?.focus({ preventScroll: true })
+    selected?.scrollIntoView({ block: 'nearest' })
+  }
 }
 
 document.addEventListener(
   'mousedown',
   (ev) => {
-    if (menuEl && !menuEl.contains(ev.target as Node)) closeMenu()
+    if (menuEl && !menuEl.contains(ev.target as Node) && !menuOwner?.contains(ev.target as Node)) closeMenu()
   },
   true
 )
@@ -192,8 +228,8 @@ export function openSheet(opts: SheetOptions): () => void {
     h(
       'div',
       { class: 'sheet-actions' },
-      h('span', { class: 'hint' }, h('kbd', null, '⌘'), ' ', h('kbd', null, 'Enter'), ' 실행 · ', h('kbd', null, 'Esc'), ' 닫기'),
-      h('button', { class: 'pill-btn', type: 'button', onClick: () => close() }, '취소'),
+      h('span', { class: 'hint' }, h('kbd', null, '⌘'), ' ', h('kbd', null, 'Enter'), t(' 실행 · '), h('kbd', null, 'Esc'), t(' 닫기')),
+      h('button', { class: 'pill-btn', type: 'button', onClick: () => close() }, t('취소')),
       submit
     )
   ) as HTMLFormElement
@@ -262,13 +298,13 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Escape') return
   const handled = sheetClose !== null || menuEl !== null || card.classList.contains('show')
   if (sheetClose) sheetClose()
-  else if (menuEl) closeMenu()
+  else if (menuEl) closeMenu(true)
   else hideNow()
   // 떠 있는 것을 닫았으면 상세 화면까지 닫히지 않게 여기서 멈춘다.
   if (handled) ev.stopImmediatePropagation()
 })
 
 window.addEventListener('resize', () => {
-  closeMenu()
+  menuPlace?.()
   hideNow()
 })

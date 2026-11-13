@@ -1,4 +1,5 @@
 // 대화 보기: Claude 대화 기록을 Orca 대화창처럼 그린다. 내 말은 말풍선, 답변은 문서처럼, 도구 호출은 접힌 줄.
+import { t, tt } from './i18n'
 import type { ChatItem } from '../transcript'
 import { duration, h, icon } from './ui'
 
@@ -157,7 +158,7 @@ export function markdown(src: string, depth = 0): HTMLElement {
 
 export function prettyTool(name: string): { name: string; via: string } {
   const m = /^mcp__(.+?)__(.+)$/.exec(name)
-  if (!m) return { name, via: '' }
+  if (!m) return { name: tt(name), via: '' }
   return { name: m[2], via: m[1].replace(/^claude_ai_/, '') }
 }
 
@@ -172,9 +173,9 @@ function toolGroup(tools: Tool[], live: boolean, open: Set<string>): HTMLElement
     'summary',
     null,
     h('span', { class: `tg-ic${live ? ' live' : ''}` }, icon(live ? 'refresh' : 'terminal')),
-    h('span', { class: 'tg-n' }, `도구 ${tools.length}개`),
-    h('span', { class: 'tg-names' }, live ? `${prettyTool(last.name).name} · ${last.detail}` : names.slice(0, 4).join(', ') + (names.length > 4 ? ` 외 ${names.length - 4}` : '')),
-    failed ? h('span', { class: 'tg-err' }, `실패 ${failed}`) : null,
+    h('span', { class: 'tg-n' }, t(`도구 {n}개`, { n: tools.length })),
+    h('span', { class: 'tg-names' }, live ? `${prettyTool(last.name).name} · ${tt(last.detail)}` : names.slice(0, 4).join(', ') + (names.length > 4 ? t(` 외 {n}`, { n: names.length - 4 }) : '')),
+    failed ? h('span', { class: 'tg-err' }, t(`실패 {failed}`, { failed })) : null,
     h('span', { class: 'tg-chev' }, icon('chevron'))
   )
   const el = h(
@@ -191,7 +192,7 @@ function toolGroup(tools: Tool[], live: boolean, open: Set<string>): HTMLElement
           { class: `tg-row${t.error ? ' err' : ''}` },
           h('span', { class: 'tg-name' }, p.name),
           p.via ? h('span', { class: 'tg-via' }, p.via) : null,
-          h('span', { class: 'tg-detail', title: t.detail }, t.detail)
+          h('span', { class: 'tg-detail', title: tt(t.detail) }, tt(t.detail))
         )
       })
     )
@@ -204,10 +205,10 @@ function toolGroup(tools: Tool[], live: boolean, open: Set<string>): HTMLElement
 function durLabel(ms: number): string {
   if (ms < 1000) return ''
   const sec = Math.round(ms / 1000)
-  if (sec < 60) return `${sec}초`
+  if (sec < 60) return t(`{sec}초`, { sec })
   const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}분 ${sec % 60}초`
-  return `${Math.floor(min / 60)}시간 ${min % 60}분`
+  if (min < 60) return t(`{min}분 {n}초`, { min, n: sec % 60 })
+  return t(`{n}시간 {n2}분`, { n: Math.floor(min / 60), n2: min % 60 })
 }
 
 export interface ChatRenderOptions {
@@ -223,7 +224,7 @@ export interface ChatRenderOptions {
 export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement[] {
   openExternal = o.onLink
   const out: HTMLElement[] = []
-  if (o.truncated) out.push(h('div', { class: 'chat-note' }, '이전 대화는 생략'))
+  if (o.truncated) out.push(h('div', { class: 'chat-note' }, t('이전 대화는 생략')))
   let tools: Tool[] = []
   let turnStart = 0
   let turnEnd = 0
@@ -234,7 +235,7 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
   const endTurn = () => {
     if (turnStart && turnEnd > turnStart) {
       const d = durLabel(turnEnd - turnStart)
-      if (d) out.push(h('div', { class: 'turn-end' }, h('span', null, `${d} 작업`)))
+      if (d) out.push(h('div', { class: 'turn-end' }, h('span', null, t(`{d} 작업`, { d }))))
     }
     turnStart = turnEnd = 0
   }
@@ -252,7 +253,7 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
         h(
           'div',
           { class: 'msg-me' },
-          h('div', { class: 'bubble-me' }, it.images ? h('span', { class: 'img-chip' }, `이미지 ${it.images}장`) : null, it.text)
+          h('div', { class: 'bubble-me' }, it.images ? h('span', { class: 'img-chip' }, t(`이미지 {images}장`, { images: it.images })) : null, it.text)
         )
       )
     } else if (it.k === 'text') {
@@ -260,7 +261,7 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
       out.push(h('div', { class: 'msg-agent' }, markdown(it.text)))
     } else {
       endTurn()
-      out.push(h('div', { class: 'chat-note' }, it.text))
+      out.push(h('div', { class: 'chat-note' }, tt(it.text)))
     }
   }
   flushTools(o.working)
@@ -270,7 +271,7 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
         'div',
         { class: 'chat-working' },
         h('span', { class: 'dots' }, h('i'), h('i'), h('i')),
-        '작업 중',
+        t('작업 중'),
         o.workingSince ? h('span', { class: 'when', 'data-dur': o.workingSince }, duration(o.workingSince)) : null
       )
     )

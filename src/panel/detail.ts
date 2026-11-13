@@ -1,10 +1,11 @@
 // 상세(작업실): 워크스페이스 하나를 열어 두고 에이전트 터미널을 보면서 지시를 보낸다.
+import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import type { ChatItem } from '../transcript'
 import { attachments } from './attach'
 import { markdown, renderChat, setLinkHandler } from './chat'
 import { closeMenu, hideHover, openMenu } from './overlays'
-import { AGENT_STATE_LABEL, agentName, ago, avatar, duration, fill, h, icon, statusColor, statusLabel, topicColor } from './ui'
+import { AGENT_STATE_LABEL, agentName, agoFull, avatar, duration, fill, h, icon, statusColor, statusLabel, topicColor } from './ui'
 
 export interface DetailApi {
   snap(): Snapshot | null
@@ -39,8 +40,8 @@ type Session = { kind: 'agent'; agent: AgentView } | { kind: 'terminal'; handle:
 const KEYS: { key: string; label: string; title: string }[] = [
   { key: 'enter', label: '⏎', title: 'Enter' },
   { key: 'esc', label: 'Esc', title: 'Esc' },
-  { key: 'up', label: '↑', title: '위' },
-  { key: 'down', label: '↓', title: '아래' },
+  { key: 'up', label: '↑', title: t('위') },
+  { key: 'down', label: '↓', title: t('아래') },
   { key: '1', label: '1', title: '1' },
   { key: '2', label: '2', title: '2' },
   { key: '3', label: '3', title: '3' },
@@ -75,7 +76,7 @@ export function createDetail(api: DetailApi) {
     const recent = w.agents.filter((a) => a.state === 'done').slice(0, 4)
     const agentTerms = new Set(w.agents.map((a) => a.terminal).filter(Boolean))
     const shells = w.terminals.filter((t) => !agentTerms.has(t.handle))
-    const term = (t: (typeof shells)[number]) => ({ kind: 'terminal' as const, handle: t.handle, title: t.title || '터미널', connected: t.connected, setup: t.kind === 'setup' })
+    const term = (tm: (typeof shells)[number]) => ({ kind: 'terminal' as const, handle: tm.handle, title: tm.title || t('터미널'), connected: tm.connected, setup: tm.kind === 'setup' })
     return [
       ...live.map((agent) => ({ kind: 'agent' as const, agent })),
       ...shells.filter((t) => t.connected).map(term),
@@ -100,7 +101,7 @@ export function createDetail(api: DetailApi) {
     return list.find((s) => keyOf(s) === sessionKey) ?? list[0] ?? null
   }
 
-  const LABEL = { claude: 'Claude', codex: 'Codex', terminal: '터미널' } as const
+  const LABEL = { claude: 'Claude', codex: 'Codex', terminal: t('터미널') } as const
 
   /** 새 세션을 열고, 만들어지면 그 탭을 고른다. */
   function startSession(w: WorkspaceView, kind: 'claude' | 'codex' | 'terminal'): void {
@@ -123,10 +124,10 @@ export function createDetail(api: DetailApi) {
   function addMenu(anchor: Element, w: WorkspaceView): void {
     const start = (kind: 'claude' | 'codex' | 'terminal') => startSession(w, kind)
     openMenu(anchor, [
-      { section: '새 세션' },
-      { label: 'Claude', icon: 'bot', hint: '에이전트', onSelect: () => start('claude') },
-      { label: 'Codex', icon: 'bot', hint: '에이전트', onSelect: () => start('codex') },
-      { label: '터미널', icon: 'terminal', hint: '셸', onSelect: () => start('terminal') }
+      { section: t('새 세션') },
+      { label: 'Claude', icon: 'bot', hint: t('에이전트'), onSelect: () => start('claude') },
+      { label: 'Codex', icon: 'bot', hint: t('에이전트'), onSelect: () => start('codex') },
+      { label: t('터미널'), icon: 'terminal', hint: t('셸'), onSelect: () => start('terminal') }
     ])
   }
 
@@ -136,25 +137,25 @@ export function createDetail(api: DetailApi) {
     const topic = w.topic ? snap?.repos.find((r) => r.id === w.repoId)?.topics.find((t) => t.id === w.topic) : null
     const pill = h(
       'button',
-      { class: 'state-pill btn', style: { '--c': statusColor(w.status) }, title: '상태 바꾸기' },
+      { class: 'state-pill btn', style: { '--c': statusColor(w.status) }, title: t('상태 바꾸기') },
       h('i'),
       statusLabel(w.status),
       icon('chevron')
     )
     pill.addEventListener('click', () => api.statusMenu(pill, w))
-    const more = h('button', { class: 'icon-btn', title: '메뉴' }, icon('more'))
+    const more = h('button', { class: 'icon-btn', title: t('메뉴') }, icon('more'))
     more.addEventListener('click', () => api.workspaceMenu(more, w))
     const top = h(
       'div',
       { class: 'd-top' },
       host
-        ? h('button', { class: 'icon-btn', title: '닫기 (Esc)', onClick: close }, icon('x'))
-        : h('button', { class: 'icon-btn', title: '뒤로', onClick: close }, icon('back')),
+        ? h('button', { class: 'icon-btn', title: t('닫기 (Esc)'), onClick: close }, icon('x'))
+        : h('button', { class: 'icon-btn', title: t('뒤로'), onClick: close }, icon('back')),
       pill,
       topic ? h('span', { class: 'topic-tag', style: { '--t': topicColor(topic.id) } }, topic.name) : null,
       h('span', { class: 'spacer' }),
-      host ? h('button', { class: 'icon-btn', title: '크게 보기', onClick: expand }, icon('fit')) : null,
-      h('button', { class: host ? 'icon-btn' : 'pill-btn', title: 'Orca에서 열기', onClick: () => api.openWorkspace(w) }, icon('open'), host ? null : 'Orca에서 열기'),
+      host ? h('button', { class: 'icon-btn', title: t('크게 보기'), onClick: expand }, icon('fit')) : null,
+      h('button', { class: host ? 'icon-btn' : 'pill-btn', title: t('Orca에서 열기'), onClick: () => api.openWorkspace(w) }, icon('open'), host ? null : t('Orca에서 열기')),
       more
     )
     const title = h(
@@ -176,16 +177,16 @@ export function createDetail(api: DetailApi) {
           )
         : null,
       w.pr?.title ? h('span', { class: 'pr-title' }, w.pr.title) : null,
-      h('span', null, `${w.repo} · 마지막 활동 ${ago(w.lastActivityAt)} 전`)
+      h('span', null, t(`{repo} · 마지막 활동 {when}`, { repo: w.repo, when: agoFull(w.lastActivityAt) }))
     )
     // 메모를 쓰는 중이면 다시 그리지 않는다.
     if (!memo || document.activeElement !== memo) {
-      memo = h('textarea', { class: 'd-memo', rows: 1, placeholder: '메모' }) as HTMLTextAreaElement
+      memo = h('textarea', { class: 'd-memo', rows: 1, placeholder: t('메모') }) as HTMLTextAreaElement
       memo.value = w.comment
       memo.addEventListener('blur', () => {
         const cur = ws()
         if (!cur || memo!.value.trim() === cur.comment) return
-        void api.call('pod.setComment', { id: cur.id, comment: memo!.value.trim() }).then(() => api.toast('메모 저장'))
+        void api.call('pod.setComment', { id: cur.id, comment: memo!.value.trim() }).then(() => api.toast(t('메모 저장')))
       })
       memo.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) memo!.blur()
@@ -220,11 +221,11 @@ export function createDetail(api: DetailApi) {
           closeX(s)
         )
       }),
-      ...(launching ? [h('span', { class: 'd-tab on launching' }, h('span', { class: 'term spin' }, icon('refresh')), h('span', null, `${launching} 시작 중…`))] : [])
+      ...(launching ? [h('span', { class: 'd-tab on launching' }, h('span', { class: 'term spin' }, icon('refresh')), h('span', null, t(`{launching} 시작 중…`, { launching })))] : [])
     )
     scroller.scrollLeft = prevScroll
     // 탭이 많아도 보이도록 세션 추가 버튼은 오른쪽 끝에 고정한다.
-    const add = h('button', { class: 'd-tab add', title: '새 세션' }, h('span', { class: 'term' }, icon('plus')), h('span', null, '세션'))
+    const add = h('button', { class: 'd-tab add', title: t('새 세션') }, h('span', { class: 'term' }, icon('plus')), h('span', null, t('세션')))
     add.addEventListener('click', () => addMenu(add, w))
     tabs.append(add)
   }
@@ -234,7 +235,7 @@ export function createDetail(api: DetailApi) {
     const handle = terminalOf(s)
     if (!handle) return null
     const alive = s.kind === 'terminal' ? s.connected : true
-    const x = h('span', { class: 'd-tab-x', role: 'button', title: alive ? '탭 닫기 (두 번 누르기)' : '탭 닫기' }, icon('x'))
+    const x = h('span', { class: 'd-tab-x', role: 'button', title: alive ? t('탭 닫기 (두 번 누르기)') : t('탭 닫기') }, icon('x'))
     let armed = 0
     x.addEventListener('click', (ev) => {
       ev.stopPropagation()
@@ -266,8 +267,8 @@ export function createDetail(api: DetailApi) {
               'button',
               {
                 class: 'icon-btn',
-                title: 'Orca에서 이 탭 열기',
-                onClick: () => void api.call('pod.focusTerminal', { terminal: s.handle }).then(() => api.toast(`${s.title}(으)로 이동`))
+                title: t('Orca에서 이 탭 열기'),
+                onClick: () => void api.call('pod.focusTerminal', { terminal: s.handle }).then(() => api.toast(t(`{title}(으)로 이동`, { title: s.title })))
               },
               icon('open')
             )
@@ -282,8 +283,8 @@ export function createDetail(api: DetailApi) {
       ? h(
           'div',
           { class: 'seg mini' },
-          h('button', { class: mode === 'chat' ? 'on' : '', title: '대화로 보기', onClick: () => mode !== 'chat' && setMode(s, 'chat') }, icon('message')),
-          h('button', { class: mode === 'screen' ? 'on' : '', title: '터미널 화면 보기', onClick: () => mode !== 'screen' && setMode(s, 'screen') }, icon('terminal'))
+          h('button', { class: mode === 'chat' ? 'on' : '', title: t('대화로 보기'), onClick: () => mode !== 'chat' && setMode(s, 'chat') }, icon('message')),
+          h('button', { class: mode === 'screen' ? 'on' : '', title: t('터미널 화면 보기'), onClick: () => mode !== 'screen' && setMode(s, 'screen') }, icon('terminal'))
         )
       : null
     fill(
@@ -293,7 +294,7 @@ export function createDetail(api: DetailApi) {
       h('span', { class: 'state-pill', 'data-state': a.state }, h('i'), AGENT_STATE_LABEL[a.state]),
       a.state !== 'done' && a.since ? h('span', { class: 'when', 'data-dur': a.since }, duration(a.since)) : null,
       seg,
-      h('button', { class: 'icon-btn', title: 'Orca에서 이 세션 열기', onClick: () => api.focusAgent(w, a) }, icon('open'))
+      h('button', { class: 'icon-btn', title: t('Orca에서 이 세션 열기'), onClick: () => api.focusAgent(w, a) }, icon('open'))
     )
   }
 
@@ -310,7 +311,7 @@ export function createDetail(api: DetailApi) {
         if (stickBottom) screen.scrollTop = screen.scrollHeight
       }
     } catch {
-      if (screen === target && !screen.textContent) screen.textContent = '터미널을 읽지 못했습니다'
+      if (screen === target && !screen.textContent) screen.textContent = t('터미널을 읽지 못했습니다')
     }
   }
 
@@ -335,11 +336,11 @@ export function createDetail(api: DetailApi) {
           'div',
           { class: 'd-empty' },
           icon('bot'),
-          h('div', null, '열린 세션이 없어요'),
+          h('div', null, t('열린 세션이 없어요')),
           h(
             'div',
             { style: { display: 'flex', gap: '6px' } },
-            h('button', { class: 'pill-btn primary', onClick: (ev: Event) => addMenu(ev.currentTarget as Element, w) }, icon('plus'), '세션 추가')
+            h('button', { class: 'pill-btn primary', onClick: (ev: Event) => addMenu(ev.currentTarget as Element, w) }, icon('plus'), t('세션 추가'))
           )
         )
       )
@@ -352,8 +353,8 @@ export function createDetail(api: DetailApi) {
           'div',
           { class: 'd-empty' },
           icon(s.setup ? 'gear' : 'terminal'),
-          h('div', null, s.setup ? '초기 설정이 끝난 탭이에요' : '끝난 터미널이에요'),
-          h('button', { class: 'pill-btn primary', onClick: () => void api.closeTabs([s.handle]) }, icon('x'), '탭 닫기')
+          h('div', null, s.setup ? t('초기 설정이 끝난 탭이에요') : t('끝난 터미널이에요')),
+          h('button', { class: 'pill-btn primary', onClick: () => void api.closeTabs([s.handle]) }, icon('x'), t('탭 닫기'))
         )
       )
       return
@@ -368,7 +369,7 @@ export function createDetail(api: DetailApi) {
         h(
           'div',
           { class: 'chat-foot' },
-          h('button', { class: 'pill-btn primary', onClick: () => api.focusAgent(w, agent!) }, icon('open'), '대화창에서 이어 하기')
+          h('button', { class: 'pill-btn primary', onClick: () => api.focusAgent(w, agent!) }, icon('open'), t('대화창에서 이어 하기'))
         )
       )
       return
@@ -397,7 +398,7 @@ export function createDetail(api: DetailApi) {
   }
 
   function buildScreen(handle: string): HTMLElement {
-    screen = h('pre', { class: 'screen' }, '불러오는 중…') as HTMLPreElement
+    screen = h('pre', { class: 'screen' }, t('불러오는 중…')) as HTMLPreElement
     stickBottom = true
     screen.addEventListener('scroll', () => {
       if (!screen) return
@@ -423,7 +424,7 @@ export function createDetail(api: DetailApi) {
   /** 대화 보기. 기록 파일을 1.5초마다 이어 읽고, 바뀌었을 때만 다시 그린다. */
   function buildChat(w: WorkspaceView, a: AgentView, handle: string | null): HTMLElement {
     const box = h('div', { class: 'convo' })
-    const inner = h('div', { class: 'convo-inner' }, h('div', { class: 'chat-note' }, '대화를 불러오는 중…'))
+    const inner = h('div', { class: 'convo-inner' }, h('div', { class: 'chat-note' }, t('대화를 불러오는 중…')))
     box.append(inner)
     stickBottom = true
     box.addEventListener('scroll', () => {
@@ -458,7 +459,7 @@ export function createDetail(api: DetailApi) {
       if (!r.ok || r.items.length === 0) {
         // 첫 요청 전이면 기록이 아직 없다. 빈 대화로 두고 계속 읽는다.
         if (!cur.prompt && handle) {
-          if (!waitingSince) inner.replaceChildren(h('div', { class: 'chat-empty' }, icon('message'), h('div', null, '새 대화')))
+          if (!waitingSince) inner.replaceChildren(h('div', { class: 'chat-empty' }, icon('message'), h('div', null, t('새 대화'))))
           waitingSince = waitingSince || Date.now()
           promptAt = 0
           return
@@ -506,7 +507,7 @@ export function createDetail(api: DetailApi) {
               h(
                 'div',
                 { class: 'chat-prompt' },
-                h('div', { class: 'cp-head' }, icon('alert'), '승인을 기다리고 있어요'),
+                h('div', { class: 'cp-head' }, icon('alert'), t('승인을 기다리고 있어요')),
                 h('pre', null, prompt.filter((l) => l.trim()).slice(-14).join('\n'))
               )
             ]
@@ -530,8 +531,8 @@ export function createDetail(api: DetailApi) {
       if (screen) window.setTimeout(() => void pull(handle), 300)
       else refreshChat()
     }
-    const send = h('button', { class: 'send', title: '보내기 (⌘Enter)', disabled: true }, icon('send')) as HTMLButtonElement
-    const area = h('textarea', { rows: 1, placeholder: '지시 보내기' }) as HTMLTextAreaElement
+    const send = h('button', { class: 'send', title: t('보내기 (⌘Enter)'), disabled: true }, icon('send')) as HTMLButtonElement
+    const area = h('textarea', { rows: 1, placeholder: t('지시 보내기') }) as HTMLTextAreaElement
     const composer = h('div', { class: 'composer stack' })
     const sync = () => (send.disabled = sending || (!area.value.trim() && pics.count() === 0))
     const pics = attachments(composer, area, { call: (n, i, q) => api.call(n, i, q), toast: (m, k) => api.toast(m, k), onChange: sync })
@@ -569,20 +570,20 @@ export function createDetail(api: DetailApi) {
     const key = (k: (typeof KEYS)[number]) =>
       h('button', { class: 'key', title: k.title, onClick: () => void api.call('pod.key', { terminal: handle, key: k.key }).then(refresh) }, k.label)
     let armed = 0
-    const stop = h('button', { class: 'key danger', title: '중단 (Ctrl-C)' }, '중단')
+    const stop = h('button', { class: 'key danger', title: t('중단 (Ctrl-C)') }, t('중단'))
     stop.addEventListener('click', () => {
       if (!armed) {
-        stop.textContent = '한 번 더'
+        stop.textContent = t('한 번 더')
         armed = window.setTimeout(() => {
           armed = 0
-          stop.textContent = '중단'
+          stop.textContent = t('중단')
         }, 2000)
         return
       }
       window.clearTimeout(armed)
       armed = 0
-      stop.textContent = '중단'
-      void api.call('pod.interrupt', { terminal: handle }).then(() => api.toast('중단 신호를 보냈습니다'))
+      stop.textContent = t('중단')
+      void api.call('pod.interrupt', { terminal: handle }).then(() => api.toast(t('중단 신호를 보냈습니다')))
     })
     queueMicrotask(() => area.focus())
     return [h('div', { class: 'keys' }, KEYS.map(key), stop), composer]
