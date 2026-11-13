@@ -2,32 +2,92 @@
   "manifestVersion": 2,
   "id": "pod",
   "name": "Pod",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "See and steer every Orca workspace and agent session on one map",
-  "engines": { "orca": ">=1.4.248" },
+  "cover": {
+    "path": "images/graph.jpg",
+    "alt": "Pod graph: a repository in the middle, topics around it, workspace cards with live sessions, and the control bar at the bottom"
+  },
+  "screenshots": [
+    {
+      "path": "images/graph.jpg",
+      "alt": "Graph of workspaces grouped by topic with session states",
+      "caption": "Workspaces on one map, grouped by topic"
+    },
+    {
+      "path": "images/session.jpg",
+      "alt": "Session window opened inside the graph showing a Claude session as a conversation",
+      "caption": "Read and steer a session without leaving the map"
+    },
+    {
+      "path": "images/control.jpg",
+      "alt": "Control bar expanded with a conversation that relays an instruction to another session",
+      "caption": "Control: one Claude that watches and relays to every session"
+    },
+    {
+      "path": "images/board.jpg",
+      "alt": "Board view with urgent sessions on top and workspaces grouped by topic",
+      "caption": "Board: what needs you now, then everything by topic"
+    }
+  ],
+  "engines": {
+    "orca": ">=1.4.248"
+  },
   "execution": "trusted-worker",
   "pluginApi": 1,
   "main": "src/worker.ts",
   "contributes": {
     "panels": [
-      { "id": "pod", "title": "Pod", "icon": "layers", "entry": "src/panel/index.html", "ui": "html" }
+      {
+        "id": "pod",
+        "title": "Pod",
+        "icon": "layers",
+        "entry": "src/panel/index.html",
+        "ui": "html"
+      }
     ],
     "events": [
-      { "on": "agent.status.changed" },
-      { "on": "workspace.created" },
-      { "on": "workspace.removed" },
-      { "on": "workspace.changed" }
+      {
+        "on": "agent.status.changed"
+      },
+      {
+        "on": "workspace.created"
+      },
+      {
+        "on": "workspace.removed"
+      },
+      {
+        "on": "workspace.changed"
+      }
     ]
   },
   "capabilities": [
-    { "kind": "storage:own" },
-    { "kind": "settings:own" },
-    { "kind": "workspace:read" },
-    { "kind": "workspace:write" },
-    { "kind": "agent:read" },
-    { "kind": "agent:launch" },
-    { "kind": "terminal:read" },
-    { "kind": "terminal:send" },
-    { "kind": "notifications:show" }
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "agent:launch"
+    },
+    {
+      "kind": "terminal:read"
+    },
+    {
+      "kind": "terminal:send"
+    },
+    {
+      "kind": "notifications:show"
+    }
   ]
 }

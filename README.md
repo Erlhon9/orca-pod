@@ -2,6 +2,8 @@
 
 **See and steer every Orca workspace and agent session from one panel.**
 
+![Pod graph view](images/graph.jpg)
+
 Pod is an [Orca](https://www.onorca.dev) sidebar panel that lays out your workspaces as a map —
 repository in the middle, topics around it, workspace cards around the topics — and lets you work
 from there: read a Claude session like a chat, answer approval prompts, send instructions, start
