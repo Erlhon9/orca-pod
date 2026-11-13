@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 2,
+  "id": "pod",
+  "name": "Pod",
+  "version": "0.1.0",
+  "description": "See and steer every Orca workspace and agent session on one map — 워크스페이스와 세션을 한 화면에서 보고 조작",
+  "engines": { "orca": ">=1.4.248" },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      { "id": "pod", "title": "Pod", "icon": "layers", "entry": "src/panel/index.html", "ui": "html" }
+    ],
+    "events": [
+      { "on": "agent.status.changed" },
+      { "on": "workspace.created" },
+      { "on": "workspace.removed" },
+      { "on": "workspace.changed" }
+    ]
+  },
+  "capabilities": [
+    { "kind": "storage:own" },
+    { "kind": "settings:own" },
+    { "kind": "workspace:read" },
+    { "kind": "workspace:write" },
+    { "kind": "agent:read" },
+    { "kind": "agent:launch" },
+    { "kind": "terminal:read" },
+    { "kind": "terminal:send" },
+    { "kind": "notifications:show" }
+  ]
+}

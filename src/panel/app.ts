@@ -1,0 +1,1772 @@
+// Pod 패널: 요약 → 지금 움직이는 에이전트 → 디렉토리별 워크스페이스(상태별) / 에이전트 / 그래프.
+import type { AgentView, RepoView, Snapshot, TerminalRef, Topic, WorkspaceView } from '../model'
+import { topicPath, topicRoot } from '../model'
+import { createController } from './controller'
+import { createDetail } from './detail'
+import { dragJustEnded, draggableRow } from './dnd'
+import { burstAt, celebrate, floatText } from './fx'
+import { createGraph } from './graph'
+import { closeMenu, hideHover, hoverable, openMenu, openSheet, refreshHover, sheetOpen, toast, type MenuItem } from './overlays'
+import {
+  AGENT_STATE_LABEL,
+  agentGlyph,
+  agentName,
+  ago,
+  avatar,
+  clip,
+  duration,
+  fill,
+  h,
+  icon,
+  statusColor,
+  statusLabel,
+  topicColor
+} from './ui'
+
+declare const orca: any
+
+type View = 'board' | 'agents' | 'graph'
+type Filter = null | 'working' | 'attention' | 'in-progress' | 'in-review'
+
+const state = {
+  snap: null as Snapshot | null,
+  view: 'board' as View,
+  query: '',
+  filter: null as Filter,
+  /** 숨길 워크스페이스 상태. 기본은 완료만 숨긴다. */
+  hidden: new Set<string>(['completed']),
+  /** 디렉토리 안을 상태별로 묶을지 주제별로 묶을지. */
+  groupBy: 'topic' as 'status' | 'topic',
+  collapsedRepos: new Set<string>(),
+  openGroups: new Set<string>(),
+  closedGroups: new Set<string>(),
+  /** 그래프 섹션 접기 상태(키: 디렉토리:묶음방식:섹션). 없으면 자동. */
+  graphSections: {} as Record<string, 'open' | 'closed' | 'all'>,
+  /** 고른 디렉토리. null 은 전체, undefined 는 아직 고르지 않음(첫 스냅샷에서 가장 바쁜 곳). */
+  repo: undefined as string | null | undefined,
+  error: null as string | null,
+  lastSync: 0,
+  syncing: false
+}
+
+const PREFS_KEY = 'pod.prefs'
+
+/* ---------- 워커 호출 ---------- */
+
+async function call<T = any>(name: string, input?: unknown, quiet = false): Promise<T> {
+  try {
+    return await orca.plugin.request(name, input, { timeoutMs: 120_000 })
+  } catch (e: any) {
+    if (!quiet) toast(e?.message ? clip(String(e.message), 120) : '요청이 실패했습니다', 'err')
+    throw e
+  }
+}
+
+let lastSig = ''
+
+function receive(snap: Snapshot): void {
+  // 완료로 바뀐 워크스페이스는 보드에서 축하한다(그래프는 카드가 직접 축하한다).
+  const prevSnap = state.snap
+  if (prevSnap && state.view !== 'graph') {
+    for (const w of Object.values(snap.workspaces)) {
+      const was = prevSnap.workspaces[w.id]?.status
+      if (!was || was === 'completed' || w.status !== 'completed') continue
+      const el = document.querySelector(`[data-hk="ws:${CSS.escape(w.id)}"]`)
+      const r = el?.getBoundingClientRect()
+      const x = r && r.width ? r.left + r.width / 2 : window.innerWidth / 2
+      const y = r && r.width ? r.top + r.height / 2 : 160
+      celebrate(x, y)
+      floatText(x, y, '완료!', 'var(--s-completed)')
+    }
+  }
+  state.snap = snap
+  // 보드에서 행을 끄는 중이면 다시 그리지 않는다(놓으면 새로 읽는다).
+  if (document.body.classList.contains('row-dragging')) return
+  if (state.repo === undefined) state.repo = snap.repos[0]?.id ?? null
+  else if (state.repo && !snap.repos.some((r) => r.id === state.repo)) state.repo = null
+  state.error = null
+  state.lastSync = Date.now()
+  const sig = JSON.stringify({ ...snap, at: 0 })
+  renderTop()
+  controller.update()
+  if (sig !== lastSig) {
+    lastSig = sig
+    renderBody()
+    refreshHover()
+    detail.update()
+  }
+}
+
+async function sync(fresh = false): Promise<void> {
+  if (state.syncing) return
+  state.syncing = true
+  refreshBtn.classList.add('spin')
+  try {
+    receive(await call<Snapshot>('pod.snapshot', { fresh }, true))
+  } catch (e: any) {
+    state.error = e?.message ?? '불러오지 못했습니다'
+    renderTop()
+    if (!state.snap) renderBody()
+  } finally {
+    state.syncing = false
+    refreshBtn.classList.remove('spin')
+  }
+}
+
+/* ---------- 조작 ---------- */
+
+const ws = (id: string) => state.snap?.workspaces[id]
+
+function openWorkspace(w: WorkspaceView): void {
+  void call('pod.openWorkspace', { id: w.id }).then(() => toast(`${clip(w.name, 28)} 열림`))
+}
+
+function focusAgent(w: WorkspaceView, a: AgentView): void {
+  void call('pod.focusAgent', { id: w.id, agentKey: a.key }).then(() => toast(`${clip(a.title, 28)}(으)로 이동`))
+}
+
+const armed = new Map<string, number>()
+
+/** 중단은 실수로 누르기 쉬워서 2초 안에 한 번 더 눌러야 실행한다. */
+function interrupt(btn: HTMLElement, a: AgentView): void {
+  if (!a.terminal) return
+  const key = a.key
+  if (armed.has(key)) {
+    clearTimeout(armed.get(key))
+    armed.delete(key)
+    void call('pod.interrupt', { terminal: a.terminal }).then(() => toast('중단 신호를 보냈습니다'))
+    return
+  }
+  const label = btn.lastChild
+  const prev = label?.textContent ?? ''
+  if (label) label.textContent = '한 번 더'
+  btn.classList.add('danger')
+  armed.set(
+    key,
+    window.setTimeout(() => {
+      armed.delete(key)
+      if (label) label.textContent = prev
+    }, 2000)
+  )
+}
+
+function setStatus(w: WorkspaceView, status: string): void {
+  if (w.status === status) return
+  void call('pod.setStatus', { id: w.id, status }).then(() => toast(`${clip(w.name, 24)} → ${statusLabel(status)}`))
+}
+
+function editComment(w: WorkspaceView): void {
+  const area = h('textarea', { rows: 3, placeholder: '메모' }) as HTMLTextAreaElement
+  area.value = w.comment
+  openSheet({
+    title: '메모 편집',
+    sub: w.name,
+    body: [h('label', { class: 'field' }, area)],
+    submitLabel: '저장',
+    submitIcon: 'check',
+    onSubmit: async () => {
+      await call('pod.setComment', { id: w.id, comment: area.value.trim() })
+      toast('메모를 저장했습니다')
+    }
+  })
+}
+
+function agentChoice(initial: string): { el: HTMLElement; value: () => string } {
+  let value = initial
+  const buttons = ['claude', 'codex'].map((type) =>
+    h(
+      'button',
+      {
+        type: 'button',
+        class: type === value ? 'on' : '',
+        onClick: () => {
+          value = type
+          buttons.forEach((b, i) => b.classList.toggle('on', ['claude', 'codex'][i] === type))
+        }
+      },
+      avatar({ type, state: 'idle' }, 'sm'),
+      agentName(type)
+    )
+  )
+  return { el: h('div', { class: 'field' }, h('span', null, '에이전트'), h('div', { class: 'choice' }, buttons)), value: () => value }
+}
+
+function launchAgent(w: WorkspaceView, initial = 'claude'): void {
+  const choice = agentChoice(initial)
+  const area = h('textarea', { rows: 4, placeholder: '첫 지시 (비워 두면 빈 세션)' }) as HTMLTextAreaElement
+  openSheet({
+    title: '에이전트 시작',
+    sub: w.name,
+    body: [choice.el, h('label', { class: 'field' }, h('span', null, '지시'), area)],
+    submitLabel: '시작',
+    submitIcon: 'bot',
+    onSubmit: async () => {
+      await call('pod.launchAgent', { id: w.id, agent: choice.value(), prompt: area.value.trim() || undefined })
+      toast(`${agentName(choice.value())} 시작`)
+    }
+  })
+}
+
+function createWorkspace(repo: RepoView, parent?: WorkspaceView, topicId?: string | null, from?: Element | null): void {
+  const name = h('input', { placeholder: '예: 결제-오류-수정' }) as HTMLInputElement
+  const choice = agentChoice('claude')
+  let withAgent = true
+  const sw = h('span', { class: 'switch on' })
+  const toggle = h(
+    'button',
+    {
+      type: 'button',
+      class: 'toggle-row',
+      onClick: () => {
+        withAgent = !withAgent
+        sw.classList.toggle('on', withAgent)
+        agentBlock.style.display = withAgent ? '' : 'none'
+      }
+    },
+    sw,
+    '에이전트와 함께 시작'
+  )
+  const area = h('textarea', { rows: 3, placeholder: '첫 지시' }) as HTMLTextAreaElement
+  const agentBlock = h('div', null, choice.el, h('label', { class: 'field' }, h('span', null, '지시'), area))
+  openSheet({
+    title: parent ? '하위 워크스페이스 만들기' : '새 워크스페이스',
+    sub: [repo.name, parent ? `${parent.name} 아래` : null, topicId ? repo.topics.find((t) => t.id === topicId)?.name : null].filter(Boolean).join(' · '),
+    body: [h('label', { class: 'field' }, h('span', null, '이름'), name), h('div', { style: { marginTop: '10px' } }, toggle), agentBlock],
+    submitLabel: '만들기',
+    submitIcon: 'plus',
+    canSubmit: () => name.value.trim().length > 0,
+    onSubmit: async () => {
+      const r = await call<{ id: string | null }>('pod.createWorkspace', {
+        repoId: repo.id,
+        name: name.value.trim(),
+        parentId: parent?.id,
+        topicId: topicId ?? undefined,
+        agent: withAgent ? choice.value() : undefined,
+        prompt: withAgent ? area.value.trim() || undefined : undefined
+      })
+      toast(`${name.value.trim()} 만들었습니다`)
+      // 새로 만든 워크스페이스를 바로 작업실로 연다.
+      if (r.id) {
+        await sync(true)
+        if (state.snap?.workspaces[r.id]) detail.open(r.id, undefined, from?.isConnected ? from : null, { host: detailHost() })
+      }
+    }
+  })
+}
+
+/** 그래프 화면이면 작업실을 그래프 안 창으로 띄운다. */
+const detailHost = () => (state.view === 'graph' ? stage : null)
+
+/** Claude·Codex·터미널 중 하나를 골라 그 워크스페이스에 세션을 더하고 작업실에서 연다. */
+function sessionMenu(anchor: Element | null, w: WorkspaceView): void {
+  const go = (kind: 'claude' | 'codex' | 'terminal') => () => detail.openWithSession(w.id, kind, anchor, { host: detailHost() })
+  const items: MenuItem[] = [
+    { section: '새 세션' },
+    { label: 'Claude', icon: 'bot', hint: '에이전트', onSelect: go('claude') },
+    { label: 'Codex', icon: 'bot', hint: '에이전트', onSelect: go('codex') },
+    { label: '터미널', icon: 'terminal', hint: '셸', onSelect: go('terminal') }
+  ]
+  if (anchor?.isConnected) openMenu(anchor, items)
+  else openMenu({ x: window.innerWidth / 2 - 100, y: 160 }, items)
+}
+
+function addSection(repo: RepoView, parentId?: string): void {
+  const parent = parentId ? repo.topics.find((t) => t.id === parentId) : undefined
+  const name = h('input', { placeholder: parent ? '예: 상품 관리' : '예: 결제' }) as HTMLInputElement
+  const keywords = h('input', { placeholder: '쉼표로 구분, 예: 결제, payment' }) as HTMLInputElement
+  openSheet({
+    title: parent ? '새 하위 주제' : '새 주제',
+    sub: parent ? `${repo.name} › ${topicPath(repo.topics, parent.id)}` : repo.name,
+    body: [h('label', { class: 'field' }, h('span', null, '이름'), name), h('label', { class: 'field' }, h('span', null, '분류 키워드'), keywords)],
+    submitLabel: '추가',
+    submitIcon: 'plus',
+    canSubmit: () => name.value.trim().length > 0,
+    onSubmit: async () => {
+      const topics = [
+        ...repo.topics,
+        { name: name.value.trim(), keywords: keywords.value.split(/[,，]/).map((k) => k.trim()).filter(Boolean), parent: parent?.id }
+      ]
+      await call('pod.saveTopics', { repoId: repo.id, topics })
+      state.groupBy = 'topic'
+      savePrefs()
+      toast(`${name.value.trim()} 주제를 만들었습니다`)
+      void sync(true)
+    }
+  })
+}
+
+function openPR(w: WorkspaceView): void {
+  if (!w.pr?.url) return
+  void Promise.resolve(orca.shell.openExternal(w.pr.url)).catch(() => toast('링크를 열지 못했습니다', 'err'))
+}
+
+function statusGrid(w: WorkspaceView): HTMLElement {
+  const statuses = [...new Set([...(state.snap?.statuses ?? []), 'todo', 'in-progress', 'in-review', 'completed'])]
+  return h(
+    'div',
+    { class: 'status-grid' },
+    statuses.map((st) =>
+      h(
+        'button',
+        {
+          class: `status-opt${st === w.status ? ' on' : ''}`,
+          style: { '--c': statusColor(st) },
+          onClick: () => {
+            closeMenu()
+            setStatus(w, st)
+          }
+        },
+        h('i'),
+        statusLabel(st)
+      )
+    )
+  )
+}
+
+function topicGrid(w: WorkspaceView, topics: Topic[]): HTMLElement {
+  const opt = (id: string | null, name: string) =>
+    h(
+      'button',
+      {
+        class: `status-opt${(w.topic ?? null) === id && (id !== null || !w.topic) ? ' on' : ''}`,
+        style: { '--c': id ? topicColor(id) : 'var(--muted)' },
+        onClick: () => {
+          closeMenu()
+          void call('pod.assignTopic', { repoId: w.repoId, id: w.id, topicId: id }).then(() => toast(`${clip(w.name, 20)} → ${name}`))
+        }
+      },
+      h('i'),
+      name
+    )
+  return h('div', { class: 'status-grid' }, topics.map((t) => opt(t.id, topicPath(topics, t.id))), opt(null, '자동'))
+}
+
+function statusMenu(at: Element, w: WorkspaceView): void {
+  openMenu(at, [{ section: '상태' }, { custom: statusGrid(w) }])
+}
+
+function workspaceMenu(at: { x: number; y: number } | Element, w: WorkspaceView, owner?: Element): void {
+  const repo = state.snap?.repos.find((r) => r.id === w.repoId)
+  const grid = statusGrid(w)
+  const items: MenuItem[] = [
+    { label: '작업실', icon: 'terminal', onSelect: () => detail.open(w.id, undefined, owner ?? null, { host: detailHost() }) },
+    { label: '세션 추가', icon: 'plus', onSelect: () => sessionMenu(owner ?? (at instanceof Element ? at : null), w) },
+    { label: 'Orca에서 열기', icon: 'open', onSelect: () => openWorkspace(w) },
+    { label: 'Claude 시작', icon: 'bot', onSelect: () => launchAgent(w, 'claude') },
+    { label: 'Codex 시작', icon: 'bot', onSelect: () => launchAgent(w, 'codex') },
+    ...(repo ? [{ label: '하위 워크스페이스', icon: 'sub', onSelect: () => createWorkspace(repo, w) }] : []),
+    { label: '메모 편집', icon: 'edit', onSelect: () => editComment(w) },
+    ...(w.unread ? [{ label: '읽음으로 표시', icon: 'eye', onSelect: () => void call('pod.markRead', { id: w.id }) }] : []),
+    ...(w.pr?.url ? [{ label: `PR #${w.pr.number} 열기`, icon: 'pr', onSelect: () => openPR(w) }] : []),
+    'sep',
+    { section: '상태' },
+    { custom: grid },
+    ...(repo && repo.topics.length ? (['sep', { section: '주제' }, { custom: topicGrid(w, repo.topics) }] as MenuItem[]) : [])
+  ]
+  openMenu(at, items, owner)
+}
+
+/* ---------- 호버 카드 내용 ---------- */
+
+const tails = new Map<string, { at: number; lines: string[] | null }>()
+
+function tailBlock(terminal: string): HTMLElement {
+  const pre = h('pre', { class: 'tail loading' }, '터미널 불러오는 중…')
+  const cached = tails.get(terminal)
+  const setTail = (lines: string[] | null) => {
+    if (!lines || lines.length === 0) {
+      pre.textContent = '출력 없음'
+      return
+    }
+    pre.classList.remove('loading')
+    pre.textContent = lines.slice(-10).join('\n')
+  }
+  if (cached && Date.now() - cached.at < 4000) {
+    setTail(cached.lines)
+  } else {
+    tails.set(terminal, { at: Date.now(), lines: cached?.lines ?? null })
+    if (cached?.lines) setTail(cached.lines)
+    void call<{ lines: string[] }>('pod.tail', { terminal }, true)
+      .then((r) => {
+        tails.set(terminal, { at: Date.now(), lines: r.lines })
+        setTail(r.lines)
+      })
+      .catch(() => {
+        pre.textContent = '터미널을 읽지 못했습니다'
+      })
+  }
+  return pre
+}
+
+function agentCard(wsId: string, key: string): HTMLElement | null {
+  const w = ws(wsId)
+  const a = w?.agents.find((x) => x.key === key)
+  if (!w || !a) return null
+  const rows: HTMLElement[] = []
+  if (a.prompt) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '마지막 요청'), h('div', { class: 'v' }, clip(a.prompt, 400))))
+  if (a.tool && (a.state === 'working' || a.state === 'blocked'))
+    rows.push(
+      h(
+        'div',
+        { class: 'hc-row' },
+        h('div', { class: 'k' }, a.state === 'blocked' ? '승인을 기다리는 도구' : '지금 하는 일'),
+        h('div', { class: 'tool' }, h('b', null, a.tool.name), h('code', null, clip(a.tool.input, 240)))
+      )
+    )
+  if (a.lastMessage)
+    rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '마지막 답변'), h('div', { class: 'v' }, clip(a.lastMessage, 500))))
+  if (a.terminal && a.state !== 'done') rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '터미널'), tailBlock(a.terminal)))
+  const meta: HTMLElement[] = []
+  if (a.subagents > 0) meta.push(h('span', null, icon('agents'), `하위 에이전트 ${a.subagents}`))
+  meta.push(h('span', null, icon(a.surface === 'chat' ? 'message' : 'terminal'), a.surface === 'chat' ? '대화창' : '터미널'))
+  if (a.interrupted) meta.push(h('span', null, icon('stop'), '중단됨'))
+  rows.push(h('div', { class: 'hc-meta' }, meta))
+
+  const actions: HTMLElement[] = [
+    h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), '작업실'),
+    h('button', { class: 'pill-btn', onClick: () => focusAgent(w, a) }, icon('open'), 'Orca')
+  ]
+  if (a.terminal && a.state !== 'done') {
+    if (a.state === 'working') {
+      const stop = h('button', { class: 'pill-btn danger' }, icon('stop'), h('span', null, '중단'))
+      stop.addEventListener('click', () => interrupt(stop, a))
+      actions.push(stop)
+    }
+  }
+
+  return h(
+    'div',
+    null,
+    h(
+      'div',
+      { class: 'hc-head' },
+      avatar(a, 'lg'),
+      h(
+        'div',
+        { style: { minWidth: '0' } },
+        h(
+          'div',
+          { class: 'hc-kicker' },
+          h('span', { class: 'state-pill', 'data-state': a.state }, h('i'), AGENT_STATE_LABEL[a.state]),
+          agentName(a.type),
+          a.since && a.state !== 'done' ? h('span', { 'data-dur': a.since }, `· ${duration(a.since)}째`) : null
+        ),
+        h('div', { class: 'hc-title' }, a.title),
+        h('div', { class: 'hc-sub' }, `${w.repo} · ${w.name}`)
+      )
+    ),
+    h('div', { class: 'hc-rows' }, rows),
+    h('div', { class: 'hc-actions' }, actions)
+  )
+}
+
+const PR_STATE: Record<string, string> = { open: '열림', merged: '머지됨', closed: '닫힘', draft: '초안' }
+const CHECKS: Record<string, string> = { success: '체크 통과', failure: '체크 실패', pending: '체크 진행 중', neutral: '체크 중립' }
+
+/* ---------- 열린 탭 ---------- */
+
+const TAB_ORDER = (w: WorkspaceView, t: TerminalRef) => (!t.connected ? 3 : t.kind === 'agent' ? 0 : t.kind === 'shell' ? 1 : 2)
+
+function tabIcon(t: TerminalRef): HTMLElement {
+  if (t.kind === 'agent') return h('span', { class: 'tb-glyph', 'data-type': t.agentType ?? '' }, agentGlyph(t.agentType ?? 'agent'))
+  return h('span', { class: `tb-ic ${t.kind}` }, icon(t.kind === 'setup' ? 'gear' : 'terminal'))
+}
+
+function tabState(w: WorkspaceView, t: TerminalRef): { label: string; cls: string } {
+  if (!t.connected) return { label: '끝남', cls: 'dead' }
+  const a = w.agents.find((x) => x.terminal === t.handle)
+  if (a) return { label: AGENT_STATE_LABEL[a.state], cls: a.state }
+  return { label: t.kind === 'setup' ? '설정 중' : '실행 중', cls: 'live' }
+}
+
+/** 탭을 닫는다. 닫히는 줄은 접히며 사라지고 조각이 흩어진다. */
+async function closeTabs(w: WorkspaceView | null, handles: string[], els: Element[] = []): Promise<void> {
+  if (!handles.length) return
+  for (const el of els) {
+    burstAt(el, 'var(--muted)', 8, 0.6)
+    ;(el as HTMLElement).animate?.([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateX(24px) scale(0.96)' }], { duration: 220, fill: 'forwards' })
+  }
+  try {
+    const r = await call<{ closed: number; failed: string[] }>('pod.closeTerminals', { terminals: handles })
+    toast(r.failed.length ? `탭 ${r.closed}개를 닫았고 ${r.failed.length}개는 못 닫았습니다` : `탭 ${r.closed}개를 닫았습니다`, r.failed.length ? 'err' : 'ok')
+  } finally {
+    void sync(true)
+    refreshHover()
+  }
+  void w
+}
+
+/** 대화창(채팅) 세션 중 아직 열려 있는 것. 터미널이 없어 닫을 수는 없다. */
+const chatSessions = (w: WorkspaceView) => w.agents.filter((a) => a.surface === 'chat' && a.state !== 'done')
+
+/** 워크스페이스의 세션 목록: 대화창 세션과 열린 터미널 탭. 줄을 누르면 열고, ×로 탭을 닫는다(살아 있는 탭은 두 번). */
+function tabsBlock(w: WorkspaceView): HTMLElement | null {
+  const chats = chatSessions(w)
+  if (!w.terminals.length && !chats.length) return null
+  const list = [...w.terminals].sort((a, b) => TAB_ORDER(w, a) - TAB_ORDER(w, b))
+  const dead = list.filter((t) => !t.connected)
+  const chatRows = chats.map((a) => {
+    const row = h(
+      'div',
+      { class: 'tb-row chat', title: a.lastMessage ? clip(a.lastMessage, 200) : a.title },
+      h('span', { class: 'tb-glyph chat', 'data-type': a.type }, agentGlyph(a.type)),
+      h('span', { class: 'tb-title' }, a.title),
+      h('span', { class: 'tb-kind' }, '대화창'),
+      h('span', { class: `tb-state ${a.state}` }, AGENT_STATE_LABEL[a.state])
+    )
+    row.addEventListener('click', () => detail.open(w.id, a.key, row, { host: detailHost() }))
+    return row
+  })
+  const rows = list.map((t) => {
+    const st = tabState(w, t)
+    const x = h('button', { class: 'tb-x', title: t.connected ? '닫기 (두 번 누르기)' : '닫기' }, icon('x'))
+    const row = h(
+      'div',
+      { class: `tb-row${t.connected ? '' : ' dead'}`, title: t.lastLine || t.title },
+      tabIcon(t),
+      h('span', { class: 'tb-title' }, t.title || '터미널'),
+      h('span', { class: 'tb-kind' }, t.kind === 'setup' ? '초기 설정' : t.kind === 'agent' ? '터미널' : '셸'),
+      h('span', { class: `tb-state ${st.cls}` }, st.label),
+      x
+    )
+    row.addEventListener('click', () => {
+      const a = w.agents.find((ag) => ag.terminal === t.handle)
+      detail.open(w.id, a ? a.key : `t:${t.handle}`, row, { host: detailHost() })
+    })
+    let armed = 0
+    x.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      if (t.connected && !armed) {
+        x.classList.add('armed')
+        armed = window.setTimeout(() => {
+          armed = 0
+          x.classList.remove('armed')
+        }, 2000)
+        return
+      }
+      window.clearTimeout(armed)
+      void closeTabs(w, [t.handle], [row])
+    })
+    return row
+  })
+  const sweep = dead.length
+    ? h(
+        'button',
+        {
+          class: 'tb-sweep',
+          onClick: (ev: Event) => {
+            ev.stopPropagation()
+            void closeTabs(
+              w,
+              dead.map((t) => t.handle),
+              rows.filter((r) => r.classList.contains('dead'))
+            )
+          }
+        },
+        icon('broom'),
+        `끝난 탭 ${dead.length}개 닫기`
+      )
+    : null
+  return h('div', { class: 'tb' }, chatRows, rows, sweep)
+}
+
+/** 그래프 카드의 탭 줄에 올렸을 때: 탭 목록만. */
+function tabsCard(wsId: string): HTMLElement | null {
+  const w = ws(wsId)
+  if (!w) return null
+  return h('div', null, h('div', { class: 'hc-kicker' }, `세션 ${w.terminals.length + chatSessions(w).length}`), h('div', { class: 'hc-title' }, w.name), tabsBlock(w))
+}
+
+function workspaceCard(wsId: string): HTMLElement | null {
+  const w = ws(wsId)
+  if (!w) return null
+  const rows: HTMLElement[] = []
+  if (w.pr)
+    rows.push(
+      h(
+        'div',
+        { class: 'hc-row' },
+        h('div', { class: 'k' }, [`PR #${w.pr.number}`, PR_STATE[w.pr.state], w.pr.checks ? CHECKS[w.pr.checks] ?? w.pr.checks : null].filter(Boolean).join(' · ')),
+        w.pr.title ? h('div', { class: 'v' }, w.pr.title) : null
+      )
+    )
+  if (w.comment) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, '메모'), h('div', { class: 'v' }, w.comment)))
+  const shown = w.agents.filter((a) => a.state !== 'done').concat(w.agents.filter((a) => a.state === 'done').slice(0, 3))
+  if (shown.length)
+    rows.push(
+      h(
+        'div',
+        { class: 'hc-row' },
+        h('div', { class: 'k' }, `에이전트 ${w.agents.length}`),
+        h(
+          'div',
+          { class: 'hc-agents' },
+          shown.map((a) =>
+            h(
+              'div',
+              { class: 'hc-agent', onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element, { host: detailHost() }) },
+              avatar(a, 'sm'),
+              h('span', null, a.title),
+              h('em', null, AGENT_STATE_LABEL[a.state])
+            )
+          )
+        )
+      )
+    )
+  const tabs = tabsBlock(w)
+  if (tabs) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, `세션 ${w.terminals.length + chatSessions(w).length}`), tabs))
+  const parent = w.parentId ? ws(w.parentId) : null
+  rows.push(
+    h(
+      'div',
+      { class: 'hc-meta' },
+      h('span', null, icon('terminal'), `터미널 ${w.liveTerminals}`),
+      w.lastActivityAt ? h('span', null, `마지막 활동 ${ago(w.lastActivityAt)} 전`) : null,
+      parent ? h('span', null, icon('sub'), parent.name) : null
+    ),
+    h('div', { class: 'hc-path' }, w.path)
+  )
+  return h(
+    'div',
+    null,
+    h(
+      'div',
+      { style: { minWidth: '0' } },
+      h(
+        'div',
+        { class: 'hc-kicker' },
+        h('span', { class: 'state-pill', style: { '--c': statusColor(w.status) } }, h('i'), statusLabel(w.status)),
+        w.repo
+      ),
+      h('div', { class: 'hc-title' }, w.name),
+      w.branch ? h('div', { class: 'hc-sub', style: { fontFamily: 'var(--mono)', fontSize: '10.5px' } }, w.branch) : null
+    ),
+    h('div', { class: 'hc-rows' }, rows),
+    h(
+      'div',
+      { class: 'hc-actions' },
+      h('button', { class: 'pill-btn primary', onClick: (ev: Event) => detail.open(w.id, undefined, ev.currentTarget as Element, { host: detailHost() }) }, icon('terminal'), '작업실'),
+      h('button', { class: 'pill-btn', onClick: () => openWorkspace(w) }, icon('open'), 'Orca'),
+      h('button', { class: 'pill-btn', onClick: (ev: Event) => workspaceMenu(ev.currentTarget as Element, w) }, icon('more'), '더보기')
+    )
+  )
+}
+
+/* ---------- 필터 ---------- */
+
+const inScope = (w: WorkspaceView) => !state.repo || w.repoId === state.repo
+
+const ACTIVE = new Set(['working', 'blocked', 'waiting'])
+
+/** 숨긴 상태여도 에이전트가 작업 중이거나 확인을 기다리면 보인다. 검색 중에는 숨긴 상태도 찾는다. */
+function shown(w: WorkspaceView): boolean {
+  if (!state.hidden.has(w.status)) return true
+  if (state.query.trim()) return true
+  return w.agents.some((a) => ACTIVE.has(a.state))
+}
+
+function matches(w: WorkspaceView): boolean {
+  if (!inScope(w)) return false
+  if (!shown(w)) return false
+  const f = state.filter
+  if (f === 'working' && !w.agents.some((a) => a.state === 'working')) return false
+  if (f === 'attention' && !w.agents.some((a) => a.state === 'blocked' || a.state === 'waiting')) return false
+  if ((f === 'in-progress' || f === 'in-review') && w.status !== f) return false
+  const q = state.query.trim().toLowerCase()
+  if (!q) return true
+  const hay = [w.name, w.branch, w.repo, w.comment, w.pr ? `#${w.pr.number} ${w.pr.title}` : '', ...w.agents.map((a) => a.title)]
+    .join(' ')
+    .toLowerCase()
+  return q.split(/\s+/).every((t) => hay.includes(t))
+}
+
+const narrowing = () => state.filter !== null || state.query.trim() !== ''
+
+/* ---------- 상단 ---------- */
+
+const refreshBtn = h('button', { class: 'icon-btn', title: '새로고침', onClick: () => void sync(true) }, icon('refresh'))
+const syncEl = h('span', { class: 'sync' }, h('span', { class: 'dot' }), h('span', { class: 'txt' }, '연결 중'))
+const viewSeg = h('div', { class: 'seg', role: 'tablist' })
+const searchInput = h('input', {
+  placeholder: '검색',
+  onInput: (ev: Event) => {
+    state.query = (ev.target as HTMLInputElement).value
+    renderBody()
+  }
+}) as HTMLInputElement
+const repoBar = h('div', { class: 'repo-bar', role: 'tablist' })
+let repoBarSig = ''
+
+function selectRepo(id: string | null): void {
+  if (state.repo === id) return
+  state.repo = id
+  hideHover()
+  closeMenu()
+  savePrefs()
+  renderTop()
+  renderBody()
+  body.scrollTop = 0
+  repoBar.querySelector('.rchip.on')?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' })
+}
+
+function cycleRepo(step: number): void {
+  const ids: (string | null)[] = [null, ...(state.snap?.repos.map((r) => r.id) ?? [])]
+  const i = ids.indexOf(state.repo ?? null)
+  selectRepo(ids[(i + step + ids.length) % ids.length])
+}
+
+/** 디렉토리 전환 칩. 내용이 같으면 다시 그리지 않아 가로 스크롤 위치가 유지된다. */
+function renderRepoBar(): void {
+  const snap = state.snap
+  if (!snap) return
+  const info = snap.repos.map((r) => {
+    const list = r.workspaceIds.map((id) => snap.workspaces[id])
+    const agents = list.flatMap((w) => w.agents)
+    return {
+      r,
+      active: list.filter(shown).length,
+      signal: agents.some((a) => a.state === 'blocked' || a.state === 'waiting')
+        ? 'attention'
+        : agents.some((a) => a.state === 'working')
+          ? 'working'
+          : ''
+    }
+  })
+  const total = Object.values(snap.workspaces).filter(shown).length
+  const sig = JSON.stringify([state.repo, total, [...state.hidden], info.map((x) => [x.r.id, x.r.name, x.active, x.signal])])
+  if (sig === repoBarSig) return
+  repoBarSig = sig
+  const chip = (id: string | null, label: string, count: number, signal: string, title: string) =>
+    h(
+      'button',
+      { class: `rchip${(state.repo ?? null) === id ? ' on' : ''}`, role: 'tab', title, onClick: () => selectRepo(id) },
+      id ? h('i', { 'data-signal': signal }) : icon('board'),
+      h('span', { class: 'rn' }, label),
+      h('span', { class: 'rc' }, count)
+    )
+  repoBar.replaceChildren(
+    chip(null, '전체', total, '', '모든 디렉토리'),
+    ...info.map((x) => chip(x.r.id, x.r.name, x.active, x.signal, `${x.r.name} · 표시 ${x.active} · 전체 ${x.r.workspaceIds.length}`))
+  )
+}
+const body = h('div', { class: 'body' })
+
+function toggleStatus(st: string): void {
+  if (state.hidden.has(st)) state.hidden.delete(st)
+  else state.hidden.add(st)
+  savePrefs()
+  renderTop()
+  renderBody()
+}
+
+const statusBtn = h('button', { class: 'filter-btn', title: '보일 상태 고르기' })
+
+function knownStatuses(): string[] {
+  return [...new Set([...(state.snap?.statuses ?? []), 'todo', 'in-progress', 'in-review', 'long-running', 'on-hold', 'completed'])]
+}
+
+function renderStatusBtn(): void {
+  const hiddenCount = knownStatuses().filter((st) => state.hidden.has(st)).length
+  statusBtn.classList.toggle('active', hiddenCount > 0)
+  fill(statusBtn, icon('filter'), '상태', hiddenCount ? h('span', { class: 'badge' }, `${hiddenCount} 숨김`) : null)
+}
+
+function statusFilterMenu(): void {
+  const panel = h('div', { class: 'status-filter' })
+  const draw = () => {
+    const snap = state.snap
+    const scoped = snap ? Object.values(snap.workspaces).filter(inScope) : []
+    panel.replaceChildren(
+      ...knownStatuses().map((st) => {
+        const n = scoped.filter((w) => w.status === st).length
+        const on = !state.hidden.has(st)
+        return h(
+          'button',
+          {
+            class: `sf-row${on ? ' on' : ''}`,
+            style: { '--c': statusColor(st) },
+            onClick: () => {
+              toggleStatus(st)
+              draw()
+            }
+          },
+          h('span', { class: 'box' }, on ? icon('check') : null),
+          h('span', { class: 'nm' }, statusLabel(st)),
+          h('span', { class: 'n' }, n)
+        )
+      }),
+      h('div', { class: 'sep' }),
+      h(
+        'div',
+        { class: 'sf-quick' },
+        h(
+          'button',
+          {
+            class: 'mini-btn',
+            onClick: () => {
+              state.hidden = new Set()
+              savePrefs()
+              renderTop()
+              renderBody()
+              draw()
+            }
+          },
+          '모두 보기'
+        ),
+        h(
+          'button',
+          {
+            class: 'mini-btn',
+            onClick: () => {
+              state.hidden = new Set(['completed', 'on-hold'])
+              savePrefs()
+              renderTop()
+              renderBody()
+              draw()
+            }
+          },
+          '완료·보류 숨기기'
+        )
+      )
+    )
+  }
+  draw()
+  openMenu(statusBtn, [{ section: '보일 상태' }, { custom: panel }])
+}
+
+statusBtn.addEventListener('click', statusFilterMenu)
+
+const VIEWS: { id: View; label: string; icon: string }[] = [
+  { id: 'board', label: '보드', icon: 'board' },
+  { id: 'agents', label: '에이전트', icon: 'agents' },
+  { id: 'graph', label: '그래프', icon: 'graph' }
+]
+
+function setView(v: View): void {
+  if (detail.isInline()) {
+    detail.dispose()
+    graph.select(null)
+  }
+  state.view = v
+  hideHover()
+  closeMenu()
+  savePrefs()
+  renderTop()
+  renderBody()
+}
+
+function renderTop(): void {
+  const snap = state.snap
+  const stale = state.lastSync && Date.now() - state.lastSync > 20_000
+  syncEl.className = `sync${state.error ? ' err' : stale ? ' stale' : ''}`
+  ;(syncEl.querySelector('.txt') as HTMLElement).textContent = state.error
+    ? '연결 끊김'
+    : state.lastSync
+      ? `실시간 · ${ago(state.lastSync)}`
+      : '연결 중'
+
+  viewSeg.replaceChildren(
+    ...VIEWS.map((v) =>
+      h('button', { class: state.view === v.id ? 'on' : '', role: 'tab', onClick: () => setView(v.id) }, icon(v.icon), v.label)
+    )
+  )
+
+  renderRepoBar()
+  renderStatusBtn()
+}
+
+/* ---------- 본문: 보드 ---------- */
+
+/** 워크스페이스 행 아래 세션 줄: 무엇이 어떤 상태로 무엇을 하는지 바로 읽힌다. */
+function sessionLines(w: WorkspaceView): HTMLElement | null {
+  const live = w.agents.filter((a) => a.state !== 'done')
+  if (!live.length) return null
+  const shown = live.slice(0, 4)
+  return h(
+    'div',
+    { class: 'ws-sessions' },
+    shown.map((a) => {
+      const doing =
+        a.tool && (a.state === 'working' || a.state === 'blocked')
+          ? `${a.tool.name} ${a.tool.input}`
+          : a.state === 'waiting'
+            ? a.lastMessage
+            : ''
+      const el = h(
+        'div',
+        { class: 'sess', 'data-state': a.state, title: `${agentName(a.type)} · ${a.title}` },
+        avatar(a, 'sm'),
+        h('span', { class: 't' }, a.title),
+        h('span', { class: 'st' }, AGENT_STATE_LABEL[a.state]),
+        a.since && a.state !== 'idle' ? h('span', { class: 'du', 'data-dur': a.since }, duration(a.since)) : null,
+        doing ? h('code', null, clip(doing, 160)) : null
+      )
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        detail.open(w.id, a.key, el)
+      })
+      hoverable(el, () => agentCard(w.id, a.key), 500, `sess:${a.key}`)
+      return el
+    }),
+    live.length > shown.length ? h('div', { class: 'sess-more' }, `세션 ${live.length - shown.length}개 더`) : null
+  )
+}
+
+
+function prChip(w: WorkspaceView): HTMLElement | null {
+  if (!w.pr) return null
+  return h(
+    'span',
+    {
+      class: 'pr',
+      'data-state': w.pr.state,
+      title: w.pr.title,
+      onClick: (ev: Event) => {
+        ev.stopPropagation()
+        openPR(w)
+      }
+    },
+    icon('pr'),
+    w.pr.number,
+    w.pr.checks ? h('span', { class: 'ck', 'data-checks': w.pr.checks }) : null
+  )
+}
+
+function topicTag(w: WorkspaceView): HTMLElement | null {
+  const t = state.snap?.repos.find((r) => r.id === w.repoId)?.topics.find((x) => x.id === w.topic)
+  return t ? h('span', { class: 'topic-tag', style: { '--t': topicColor(t.id) } }, t.name) : null
+}
+
+function workspaceRow(w: WorkspaceView, opts: { child?: boolean; parentHint?: string; showTopic?: boolean } = {}): HTMLElement {
+  const menuBtn = h('button', { class: 'menu-btn', title: '메뉴' }, icon('more'))
+  const row = h(
+    'div',
+    {
+      class: `ws${opts.child ? ' child' : ''}${w.activity === 'working' ? ' working' : ''}${w.unread ? ' unread' : ''}`,
+      style: { '--c': statusColor(w.status) },
+      onClick: (ev: Event) => {
+        if (!dragJustEnded()) detail.open(w.id, undefined, ev.currentTarget as Element)
+      },
+      onContextmenu: (ev: MouseEvent) => {
+        ev.preventDefault()
+        workspaceMenu({ x: ev.clientX, y: ev.clientY }, w, row)
+      }
+    },
+    h('span', { class: 'status-dot' }),
+    h(
+      'div',
+      { class: 'main' },
+      h('div', { class: 'line1' }, h('span', { class: 'nm' }, w.name), w.isMain ? h('span', { class: 'main-tag' }, 'MAIN') : null, prChip(w)),
+      h(
+        'div',
+        { class: 'line2' },
+        w.branch && w.branch !== w.name ? h('span', { class: 'br' }, icon('branch'), w.branch) : null,
+        opts.parentHint ? h('span', { class: 'parent-hint' }, `↳ ${opts.parentHint}`) : null,
+        opts.showTopic && w.topic ? topicTag(w) : null
+      ),
+      w.comment ? h('div', { class: 'cm' }, w.comment) : null,
+      sessionLines(w)
+    ),
+    h('div', { class: 'right' }, h('span', { class: 'ago', 'data-ago': w.lastActivityAt }, ago(w.lastActivityAt)), menuBtn)
+  )
+  menuBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation()
+    workspaceMenu(menuBtn, w, row)
+  })
+  hoverable(row, () => workspaceCard(w.id), 550, `ws:${w.id}`)
+  draggableRow(row, w.repoId, (kind, id, label) => moveRow(w, kind, id, label), () => {
+    hideHover()
+    closeMenu()
+  })
+  return row
+}
+
+/** 행을 다른 묶음에 놓았을 때: 상태 또는 주제를 바꾼다. */
+async function moveRow(w: WorkspaceView, kind: 'status' | 'topic', id: string, label: string): Promise<void> {
+  try {
+    if (kind === 'status') {
+      if (id === w.status) return
+      await call('pod.setStatus', { id: w.id, status: id })
+    } else {
+      if ((w.topic ?? '_') === id) return
+      await call('pod.assignTopic', { repoId: w.repoId, id: w.id, topicId: id })
+    }
+    toast(`${clip(w.name, 20)} → ${label}`)
+  } finally {
+    void sync(true)
+  }
+}
+
+/** 묶음이 크면 앞의 몇 줄만 그리고 나머지는 「더 보기」로 접는다(수백 개여도 가볍게). */
+const ROW_CAP = 20
+function cappedRows(ids: string[], snap: Snapshot, gkey: string, showTopic = false): HTMLElement[] {
+  const all = state.openGroups.has(`${gkey}:all`) || narrowing()
+  if (all || ids.length <= ROW_CAP) return groupRows(ids, snap, showTopic)
+  const more = h(
+    'button',
+    {
+      class: 'rows-more',
+      onClick: () => {
+        state.openGroups.add(`${gkey}:all`)
+        savePrefs()
+        renderBody()
+      }
+    },
+    icon('unfold'),
+    `${ids.length - ROW_CAP}개 더 보기`
+  )
+  return [...groupRows(ids.slice(0, ROW_CAP), snap, showTopic), more]
+}
+
+function groupRows(ids: string[], snap: Snapshot, showTopic = false): HTMLElement[] {
+  const inGroup = new Set(ids)
+  const out: HTMLElement[] = []
+  const visit = (id: string, depth: number) => {
+    const w = snap.workspaces[id]
+    out.push(workspaceRow(w, { child: depth > 0, showTopic }))
+    if (depth < 4) for (const c of w.childIds) if (inGroup.has(c)) visit(c, depth + 1)
+  }
+  for (const id of ids) {
+    const w = snap.workspaces[id]
+    if (w.parentId && inGroup.has(w.parentId)) continue
+    if (w.parentId && snap.workspaces[w.parentId]) {
+      out.push(workspaceRow(w, { parentHint: snap.workspaces[w.parentId].name, showTopic }))
+      for (const c of w.childIds) if (inGroup.has(c)) visit(c, 1)
+    } else visit(id, 0)
+  }
+  return out
+}
+
+function repoSection(repo: RepoView, snap: Snapshot): HTMLElement | null {
+  const ids = repo.workspaceIds.filter((id) => matches(snap.workspaces[id]))
+  if (ids.length === 0) return null
+  const single = state.repo === repo.id
+  const open = single || !state.collapsedRepos.has(repo.id) || narrowing()
+  const counts = new Map<string, number>()
+  for (const id of repo.workspaceIds) counts.set(snap.workspaces[id].status, (counts.get(snap.workspaces[id].status) ?? 0) + 1)
+  const active = repo.workspaceIds.filter((id) => shown(snap.workspaces[id])).length
+
+  const head = h(
+    'div',
+    {
+      class: `repo-head${single ? ' single' : ''}`,
+      onClick: () => {
+        if (single) return
+        if (state.collapsedRepos.has(repo.id)) state.collapsedRepos.delete(repo.id)
+        else state.collapsedRepos.add(repo.id)
+        savePrefs()
+        renderBody()
+      }
+    },
+    h('span', { class: 'folder' }, icon('folder')),
+    h('div', { class: 'name' }, h('b', null, repo.name), h('span', null, `${active} 표시 · 전체 ${repo.workspaceIds.length}`)),
+    h(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: '2px' } },
+      h(
+        'button',
+        {
+          class: 'icon-btn',
+          title: '새 워크스페이스',
+          onClick: (ev: Event) => {
+            ev.stopPropagation()
+            createWorkspace(repo)
+          }
+        },
+        icon('plus')
+      ),
+      single ? null : h('span', { class: 'chev' }, icon('chevron'))
+    ),
+    h(
+      'div',
+      { class: 'bar' },
+      snap.statuses
+        .filter((st) => counts.get(st))
+        .map((st) => h('i', { title: `${statusLabel(st)} ${counts.get(st)}`, style: { background: statusColor(st), flexGrow: String(counts.get(st)) } }))
+    ),
+    h(
+      'div',
+      { class: 'legend' },
+      snap.statuses
+        .filter((st) => counts.get(st))
+        .map((st) =>
+          h(
+            'button',
+            {
+              class: `legend-item${state.hidden.has(st) ? ' off' : ''}`,
+              title: state.hidden.has(st) ? `${statusLabel(st)} 보이기` : `${statusLabel(st)} 숨기기`,
+              onClick: (ev: Event) => {
+                ev.stopPropagation()
+                toggleStatus(st)
+              }
+            },
+            h('i', { style: { background: statusColor(st) } }),
+            `${statusLabel(st)} ${counts.get(st)}`
+          )
+        )
+    ),
+    open ? repoTools(repo) : null
+  )
+
+  const section = h('section', { class: `repo${open ? ' open' : ''}` }, head)
+  if (!open) return section
+
+  const groups = h('div', { class: 'repo-body' })
+  if (state.groupBy === 'topic') {
+    groups.append(...topicGroups(repo, ids, snap))
+    section.append(groups)
+    return section
+  }
+  for (const st of snap.statuses) {
+    const inSt = ids.filter((id) => snap.workspaces[id].status === st)
+    if (inSt.length === 0) continue
+    const gkey = `${repo.id}:${st}`
+    const closed = state.closedGroups.has(gkey) && !narrowing()
+    const toggle = () => {
+      if (state.closedGroups.has(gkey)) state.closedGroups.delete(gkey)
+      else state.closedGroups.add(gkey)
+      savePrefs()
+      renderBody()
+    }
+    groups.append(
+      h(
+        'div',
+        { class: `group${closed ? ' closed' : ''}`, style: { '--c': statusColor(st) }, 'data-drop': `status:${st}`, 'data-repo': repo.id, 'data-label': statusLabel(st) },
+        h(
+          'button',
+          { class: `group-head toggle${closed ? '' : ' expanded'}`, onClick: toggle },
+          h('span', { class: 'tag' }, h('i'), statusLabel(st)),
+          h('span', { class: 'count' }, inSt.length),
+          h('span', { class: 'chev' }, icon('chevron'))
+        ),
+        closed ? null : cappedRows(inSt, snap, gkey, true)
+      )
+    )
+  }
+  section.append(groups)
+  return section
+}
+
+/* ---------- 주제 ---------- */
+
+const extracting = new Set<string>()
+
+function repoTools(repo: RepoView): HTMLElement {
+  const seg = h(
+    'div',
+    { class: 'seg sm', onClick: (ev: Event) => ev.stopPropagation() },
+    (['status', 'topic'] as const).map((g) =>
+      h(
+        'button',
+        {
+          class: state.groupBy === g ? 'on' : '',
+          onClick: () => {
+            state.groupBy = g
+            savePrefs()
+            renderBody()
+          }
+        },
+        g === 'status' ? '상태별' : '주제별'
+      )
+    )
+  )
+  const tools: (HTMLElement | null)[] = [seg, h('span', { class: 'spacer' })]
+  if (state.groupBy === 'topic') {
+    const busy = extracting.has(repo.id)
+    tools.push(
+      h(
+        'button',
+        {
+          class: `mini-btn${busy ? ' busy' : ''}`,
+          title: 'claude 로 주제를 다시 뽑습니다',
+          onClick: (ev: Event) => {
+            ev.stopPropagation()
+            extractTopics(repo)
+          }
+        },
+        icon('sparkle'),
+        busy ? '주제 뽑는 중…' : repo.topics.length ? 'AI로 다시 뽑기' : 'AI로 주제 뽑기'
+      ),
+      h(
+        'button',
+        {
+          class: 'mini-btn',
+          onClick: (ev: Event) => {
+            ev.stopPropagation()
+            editTopics(repo)
+          }
+        },
+        icon('edit'),
+        '편집'
+      )
+    )
+  }
+  return h('div', { class: 'repo-tools', onClick: (ev: Event) => ev.stopPropagation() }, tools)
+}
+
+function extractTopics(repo: RepoView): void {
+  if (extracting.has(repo.id)) return
+  extracting.add(repo.id)
+  renderBody()
+  void call<{ topics: number; assigned: number }>('pod.suggestTopics', { repoId: repo.id })
+    .then((r) => toast(`주제 ${r.topics}개로 묶었습니다`))
+    .catch(() => {})
+    .finally(() => {
+      extracting.delete(repo.id)
+      void sync(true)
+      renderBody()
+    })
+}
+
+function editTopics(repo: RepoView): void {
+  type Row = { id?: string; name: HTMLInputElement; keywords: HTMLInputElement; el: HTMLElement }
+  const rows: Row[] = []
+  const list = h('div', { class: 'topic-edit' })
+  const addRow = (t?: Topic) => {
+    const name = h('input', { placeholder: '주제 이름' }) as HTMLInputElement
+    const keywords = h('input', { placeholder: '키워드, 쉼표로 구분' }) as HTMLInputElement
+    name.value = t?.name ?? ''
+    keywords.value = t?.keywords.join(', ') ?? ''
+    const row: Row = { id: t?.id, name, keywords, el: h('div') }
+    row.el = h(
+      'div',
+      { class: 'item' },
+      h('i', { style: { background: topicColor(t?.id ?? name.value) } }),
+      name,
+      keywords,
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'icon-btn',
+          title: '삭제',
+          onClick: () => {
+            rows.splice(rows.indexOf(row), 1)
+            row.el.remove()
+          }
+        },
+        icon('x')
+      )
+    )
+    rows.push(row)
+    list.append(row.el)
+    return row
+  }
+  repo.topics.forEach((t) => addRow(t))
+  if (!repo.topics.length) addRow()
+  openSheet({
+    title: '주제 편집',
+    sub: repo.name,
+    body: [
+      list,
+      h(
+        'button',
+        { type: 'button', class: 'mini-btn', style: { marginTop: '8px' }, onClick: () => addRow().name.focus() },
+        icon('plus'),
+        '주제 추가'
+      )
+    ],
+    submitLabel: '저장',
+    submitIcon: 'check',
+    onSubmit: async () => {
+      const topics = rows.map((r) => ({
+        id: r.id,
+        parent: repo.topics.find((t) => t.id === r.id)?.parent,
+        name: r.name.value.trim(),
+        keywords: r.keywords.value.split(/[,，]/).map((k) => k.trim()).filter(Boolean)
+      }))
+      await call('pod.saveTopics', { repoId: repo.id, topics })
+      toast('주제를 저장했습니다')
+    }
+  })
+}
+
+const STATUS_RANK = (snap: Snapshot, st: string) => {
+  const i = snap.statuses.indexOf(st)
+  return i < 0 ? 99 : i
+}
+
+function topicGroups(repo: RepoView, ids: string[], snap: Snapshot): HTMLElement[] {
+  if (!repo.topics.length) {
+    const busy = extracting.has(repo.id)
+    return [
+      h(
+        'div',
+        { class: 'topic-empty' },
+        icon('tag'),
+        h('div', null, '주제가 아직 없어요'),
+        h(
+          'div',
+          { class: 'row' },
+          h('button', { class: 'pill-btn primary', disabled: busy, onClick: () => extractTopics(repo) }, icon('sparkle'), busy ? '뽑는 중…' : 'AI로 주제 뽑기'),
+          h('button', { class: 'pill-btn', onClick: () => editTopics(repo) }, icon('edit'), '직접 만들기')
+        )
+      )
+    ]
+  }
+  const out: HTMLElement[] = []
+  // 진행 중인 것이 많은 주제가 앞에 오고, 하위 섹션은 상위 바로 아래 붙는다.
+  const activeCount = (tid: string | null) => ids.filter((id) => snap.workspaces[id].topic === tid && snap.workspaces[id].status !== 'completed').length
+  const known = new Set(repo.topics.map((t) => t.id))
+  const kids = (pid: string | null) =>
+    repo.topics.filter((t) => (pid === null ? !t.parent || !known.has(t.parent) : t.parent === pid)).sort((a, b) => activeCount(b.id) - activeCount(a.id))
+  const groups: { id: string | null; name: string; depth: number }[] = []
+  const walk = (pid: string | null, depth: number) => {
+    for (const t of kids(pid)) {
+      groups.push({ id: t.id, name: depth ? topicPath(repo.topics, t.id) : t.name, depth })
+      if (depth < 5) walk(t.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  groups.push({ id: null, name: '기타', depth: 0 })
+  for (const g of groups) {
+    const inT = ids.filter((id) => snap.workspaces[id].topic === g.id)
+    if (!inT.length) continue
+    const live = [...inT].sort(
+        (a, b) =>
+          STATUS_RANK(snap, snap.workspaces[a].status) - STATUS_RANK(snap, snap.workspaces[b].status) ||
+          snap.workspaces[b].lastActivityAt - snap.workspaces[a].lastActivityAt
+      )
+    const gkey = `${repo.id}:t:${g.id ?? '_'}`
+    const closed = state.closedGroups.has(gkey)
+    const toggle = (key: string, set: Set<string>) => () => {
+      if (set.has(key)) set.delete(key)
+      else set.add(key)
+      savePrefs()
+      renderBody()
+    }
+    const counts = new Map<string, number>()
+    for (const id of live) counts.set(snap.workspaces[id].status, (counts.get(snap.workspaces[id].status) ?? 0) + 1)
+    out.push(
+      h(
+        'div',
+        {
+          class: `group topic${closed ? ' closed' : ''}${g.depth ? ' sub' : ''}`,
+          style: { '--t': topicColor(g.id && topicRoot(repo.topics, g.id)), '--c': topicColor(g.id && topicRoot(repo.topics, g.id)) },
+          'data-drop': `topic:${g.id ?? '_'}`,
+          'data-repo': repo.id,
+          'data-label': g.name
+        },
+        h(
+          'button',
+          {
+            class: `group-head toggle${closed ? '' : ' expanded'}`,
+            onClick: toggle(gkey, state.closedGroups),
+            onContextmenu: (ev: MouseEvent) => {
+              ev.preventDefault()
+              openMenu({ x: ev.clientX, y: ev.clientY }, [{ label: '주제 편집', icon: 'edit', onSelect: () => editTopics(repo) }])
+            }
+          },
+          h('span', { class: 'tag' }, h('i'), g.name),
+          h('span', { class: 'count' }, live.length),
+          live.length
+            ? h(
+                'span',
+                { class: 'mini-bar' },
+                snap.statuses
+                  .filter((st) => counts.get(st))
+                  .map((st) => h('i', { style: { background: statusColor(st), flexGrow: String(counts.get(st)) } }))
+              )
+            : null,
+          h('span', { class: 'chev' }, icon('chevron'))
+        ),
+        closed
+          ? null
+          : cappedRows(live, snap, gkey)
+      )
+    )
+  }
+  return out
+}
+
+function liveAgentCard(w: WorkspaceView, a: AgentView): HTMLElement {
+  const actions: HTMLElement[] = [
+    h(
+      'button',
+      {
+        class: 'pill-btn',
+        onClick: (ev: Event) => {
+          ev.stopPropagation()
+          detail.open(w.id, a.key, (ev.currentTarget as Element).closest('.agent-card'))
+        }
+      },
+      icon('terminal'),
+      '작업실'
+    ),
+    h(
+      'button',
+      {
+        class: 'pill-btn',
+        onClick: (ev: Event) => {
+          ev.stopPropagation()
+          focusAgent(w, a)
+        }
+      },
+      icon('open'),
+      'Orca'
+    )
+  ]
+  if (a.terminal) {
+    if (a.state === 'working') {
+      const stop = h('button', { class: 'pill-btn danger' }, icon('stop'), h('span', null, '중단'))
+      stop.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        interrupt(stop, a)
+      })
+      actions.push(stop)
+    }
+  }
+  const doing =
+    a.state === 'working' && a.tool
+      ? h('div', { class: 'doing' }, h('b', null, a.tool.name), h('code', null, clip(a.tool.input, 120)))
+      : a.state === 'blocked' && a.tool
+        ? h('div', { class: 'doing' }, h('b', null, `${a.tool.name} 승인 요청`), h('code', null, clip(a.tool.input, 120)))
+        : a.state !== 'working'
+        ? h('div', { class: 'doing' }, h('b', null, AGENT_STATE_LABEL[a.state]), h('code', null, clip(a.lastMessage || a.prompt, 120)))
+        : null
+  const card = h(
+    'div',
+    { class: 'agent-card', 'data-state': a.state, onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element) },
+    avatar(a, 'lg'),
+    h(
+      'div',
+      { style: { minWidth: '0' } },
+      h('div', { class: 'title' }, a.title),
+      h(
+        'div',
+        { class: 'where' },
+        h('i', { style: { width: '6px', height: '6px', borderRadius: '50%', background: statusColor(w.status), flex: 'none' } }),
+        h('span', null, `${w.repo} · ${w.name}`)
+      )
+    ),
+    h('span', { class: 'elapsed', 'data-dur': a.since }, duration(a.since)),
+    doing,
+    h('div', { class: 'actions' }, actions)
+  )
+  hoverable(card, () => agentCard(w.id, a.key), 650, `card:${a.key}`)
+  return card
+}
+
+function idleChip(w: WorkspaceView, a: AgentView): HTMLElement {
+  const chip = h('button', { class: 'chip', onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element) }, avatar(a, 'sm'), h('span', null, a.title))
+  hoverable(chip, () => agentCard(w.id, a.key), 200, `chip:${a.key}`)
+  return chip
+}
+
+function allAgents(snap: Snapshot): { w: WorkspaceView; a: AgentView }[] {
+  return Object.values(snap.workspaces)
+    .filter(matches)
+    .flatMap((w) => w.agents.map((a) => ({ w, a })))
+}
+
+function renderBoard(snap: Snapshot): HTMLElement[] {
+  const out: HTMLElement[] = []
+  const pairs = allAgents(snap)
+  const live = pairs
+    .filter(({ a }) => a.state === 'working' || a.state === 'blocked' || a.state === 'waiting')
+    .sort((x, y) => (x.a.state === 'working' ? 1 : 0) - (y.a.state === 'working' ? 1 : 0) || x.a.since - y.a.since)
+  const idle = pairs.filter(({ a }) => a.state === 'idle').sort((x, y) => y.a.updatedAt - x.a.updatedAt)
+
+  out.push(h('div', { class: 'section-title' }, '지금', h('span', { class: 'count' }, live.length || '')))
+  if (live.length) out.push(h('div', { class: 'live-list' }, live.map(({ w, a }) => liveAgentCard(w, a))))
+  else out.push(h('div', { class: 'empty' }, '작업 중인 에이전트가 없어요'))
+  if (idle.length) {
+    out.push(
+      h(
+        'div',
+        { class: 'idle-strip' },
+        idle.slice(0, 8).map(({ w, a }) => idleChip(w, a)),
+        idle.length > 8 ? h('button', { class: 'chip', onClick: () => setView('agents') }, h('span', null, `+${idle.length - 8} 더보기`)) : null
+      )
+    )
+  }
+
+  const scoped = state.repo ? snap.repos.filter((r) => r.id === state.repo) : snap.repos
+  const repos = scoped.map((r) => repoSection(r, snap)).filter((x): x is HTMLElement => x !== null)
+  if (!state.repo) out.push(h('div', { class: 'section-title' }, '디렉토리', h('span', { class: 'count' }, snap.repos.length)))
+  else out.push(h('div', { style: { height: '4px' } }))
+  if (repos.length) out.push(h('div', { class: state.repo ? 'repos single' : 'repos' }, repos))
+  else out.push(h('div', { class: 'empty' }, '조건에 맞는 워크스페이스가 없어요'))
+  return out
+}
+
+/* ---------- 본문: 에이전트 ---------- */
+
+function agentRow(w: WorkspaceView, a: AgentView): HTMLElement {
+  const row = h(
+    'div',
+    { class: 'ws', style: { '--c': statusColor(w.status), gridTemplateColumns: 'auto minmax(0,1fr) auto' }, onClick: (ev: Event) => detail.open(w.id, a.key, ev.currentTarget as Element) },
+    avatar(a, 'sm'),
+    h(
+      'div',
+      { class: 'main' },
+      h('div', { class: 'line1' }, h('span', { class: 'nm' }, a.title)),
+      h('div', { class: 'line2' }, h('span', { class: 'parent-hint' }, `${w.repo} · ${w.name}`))
+    ),
+    h('div', { class: 'right' }, h('span', { class: 'ago', 'data-ago': a.updatedAt, style: { display: 'inline' } }, ago(a.updatedAt)))
+  )
+  hoverable(row, () => agentCard(w.id, a.key), 260, `row:${a.key}`)
+  return row
+}
+
+function renderAgents(snap: Snapshot): HTMLElement[] {
+  const pairs = allAgents(snap)
+  const by = (pred: (a: AgentView) => boolean) => pairs.filter(({ a }) => pred(a))
+  const attention = by((a) => a.state === 'blocked' || a.state === 'waiting')
+  const working = by((a) => a.state === 'working')
+  const idle = by((a) => a.state === 'idle').sort((x, y) => y.a.updatedAt - x.a.updatedAt)
+  const dayAgo = Date.now() - 24 * 3600_000
+  const done = by((a) => a.state === 'done' && a.updatedAt > dayAgo).sort((x, y) => y.a.updatedAt - x.a.updatedAt)
+  const out: HTMLElement[] = []
+  const block = (title: string, list: typeof pairs, render: (w: WorkspaceView, a: AgentView) => HTMLElement, cls = '') => {
+    if (!list.length) return
+    out.push(h('div', { class: 'section-title' }, title, h('span', { class: 'count' }, list.length)))
+    out.push(h('div', { class: cls || 'repo', style: cls ? undefined : { padding: '4px' } }, list.map(({ w, a }) => render(w, a))))
+  }
+  block('확인 필요', attention, liveAgentCard, 'live-list')
+  block('작업 중', working, liveAgentCard, 'live-list')
+  block('대기 중인 세션', idle, agentRow)
+  block('최근 24시간 종료', done.slice(0, 30), agentRow)
+  if (!out.length) out.push(h('div', { class: 'empty', style: { marginTop: '14px' } }, '표시할 에이전트가 없어요'))
+  return out
+}
+
+/* ---------- 상세(작업실) ---------- */
+
+const detail = createDetail({
+  snap: () => state.snap,
+  call,
+  openWorkspace,
+  focusAgent,
+  launchAgent,
+  workspaceMenu: (at, w) => workspaceMenu(at, w),
+  statusMenu,
+  openPR,
+  toast,
+  closeTabs: (handles) => closeTabs(null, handles),
+  openUrl: (url) => {
+    if (!/^https?:\/\//.test(url)) return
+    void Promise.resolve(orca.shell.openExternal(url)).catch(() => toast('링크를 열지 못했습니다', 'err'))
+  },
+  onSelect: (sel) => {
+    graph.select(sel)
+    queueMicrotask(() => controller.update())
+  },
+  onReserve: (r) => graph.setReserve(r),
+  addSession: async (w, kind) => {
+    const r =
+      kind === 'terminal'
+        ? await call<{ terminal: string | null }>('pod.newTerminal', { id: w.id })
+        : await call<{ terminal: string | null }>('pod.launchAgent', { id: w.id, agent: kind })
+    toast(kind === 'terminal' ? '터미널을 열었습니다' : `${agentName(kind)} 시작`)
+    await sync(true)
+    return r.terminal
+  }
+})
+
+const controller = createController({
+  snap: () => state.snap,
+  scope: () => state.repo ?? null,
+  call,
+  toast,
+  openDetail: (w, a, from) => detail.open(w.id, a.key, from, { host: detailHost() }),
+  focusAgent,
+  hidden: () => detail.isOpen()
+})
+
+/* ---------- 본문: 그래프 ---------- */
+
+const graph = createGraph({
+  openWorkspace: (w, el) => detail.open(w.id, undefined, el, { host: stage }),
+  focusAgent: (w, a, el) => detail.open(w.id, a.key, el, { host: stage }),
+  hoverWorkspace: (el, id) => hoverable(el, () => workspaceCard(id), 450, `gw:${id}`),
+  hoverAgent: (el, id, key) => hoverable(el, () => agentCard(id, key), 250, `ga:${key}`),
+  hoverTabs: (el, id) => hoverable(el, () => tabsCard(id), 150, `gt:${id}`),
+  deadTabs: () =>
+    Object.values(state.snap?.workspaces ?? {})
+      .filter((w) => inScope(w))
+      .flatMap((w) => w.terminals.filter((t) => !t.connected).map((t) => t.handle)),
+  closeTabs: (handles) => closeTabs(null, handles),
+  menuWorkspace: (at, w, owner) => workspaceMenu(at, w, owner),
+  groupBy: () => state.groupBy,
+  setGroupBy: (v) => {
+    state.groupBy = v
+    savePrefs()
+    renderBody()
+  },
+  sectionState: (key) => state.graphSections[key],
+  setSectionState: (keys, v) => {
+    for (const k of keys) {
+      if (v) state.graphSections[k] = v
+      else delete state.graphSections[k]
+    }
+    savePrefs()
+    renderBody()
+  },
+  scopeRepo: () => state.repo ?? null,
+  addSection: (repoId, parentId) => {
+    const repo = state.snap?.repos.find((r) => r.id === repoId)
+    if (repo) addSection(repo, parentId)
+  },
+  addSession: (repoId, topicId, anchor) => {
+    const repo = state.snap?.repos.find((r) => r.id === repoId)
+    if (repo) createWorkspace(repo, undefined, topicId, anchor)
+  },
+  addToWorkspace: (w, anchor) => sessionMenu(anchor, w),
+  moveToSection: async (w, to) => {
+    try {
+      if (to.topicId !== undefined) await call('pod.assignTopic', { repoId: w.repoId, id: w.id, topicId: to.topicId })
+      else if (to.status) await call('pod.setStatus', { id: w.id, status: to.status })
+      toast(`${clip(w.name, 20)} → ${to.label}`)
+    } catch (e) {
+      // 그래프가 화면을 먼저 옮겨 두었으므로, 실패하면 서버 값으로 다시 그린다.
+      lastSig = ''
+      void sync(true)
+      throw e
+    }
+  }
+})
+
+const stage = h('div', { style: { position: 'relative', width: '100%', height: '100%' } })
+
+function renderGraph(snap: Snapshot): void {
+  const view = graph
+  if (stage.firstElementChild !== view.el) {
+    if (detail.isInline()) detail.dispose()
+    stage.replaceChildren(view.el)
+  }
+  const visible = new Set(
+    Object.values(snap.workspaces)
+      .filter(matches)
+      .map((w) => w.id)
+  )
+  view.update(snap, visible)
+  requestAnimationFrame(() => view.attached())
+}
+
+
+/* ---------- 그리기 ---------- */
+
+function renderBody(): void {
+  const snap = state.snap
+  controller.update()
+  body.classList.toggle('graph-mode', state.view === 'graph')
+  if (!snap) {
+    body.replaceChildren(
+      state.error
+        ? h('div', { class: 'banner' }, h('b', null, '불러오지 못했습니다'), h('div', { style: { marginTop: '4px', color: 'var(--muted)' } }, state.error))
+        : h('div', null, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }))
+    )
+    return
+  }
+  if (state.view === 'graph') {
+    if (stage.parentElement !== body) body.replaceChildren(stage)
+    renderGraph(snap)
+    return
+  }
+  const scroll = body.scrollTop
+  body.replaceChildren(...(state.view === 'board' ? renderBoard(snap) : renderAgents(snap)))
+  body.scrollTop = scroll
+}
+
+/** 상대 시간 글자만 갱신한다(다시 그리지 않음). */
+function tick(): void {
+  const now = Date.now()
+  document.querySelectorAll<HTMLElement>('[data-ago]').forEach((el) => {
+    el.textContent = ago(Number(el.dataset.ago), now)
+  })
+  document.querySelectorAll<HTMLElement>('[data-dur]').forEach((el) => {
+    const v = duration(Number(el.dataset.dur), now)
+    el.textContent = el.closest('.hc-kicker') ? `· ${v}째` : v
+  })
+  renderTop()
+}
+
+/* ---------- 설정 저장 ---------- */
+
+function savePrefs(): void {
+  const prefs = {
+    view: state.view,
+    hidden: [...state.hidden],
+    collapsedRepos: [...state.collapsedRepos],
+    openGroups: [...state.openGroups],
+    closedGroups: [...state.closedGroups],
+    repo: state.repo ?? null,
+    groupBy: state.groupBy,
+    graphSections: state.graphSections
+  }
+  void Promise.resolve(orca.storage?.set?.(PREFS_KEY, prefs)).catch(() => {})
+}
+
+async function loadPrefs(): Promise<void> {
+  try {
+    const p = await orca.storage?.get?.(PREFS_KEY)
+    if (!p || typeof p !== 'object') return
+    if (p.view === 'board' || p.view === 'agents' || p.view === 'graph') state.view = p.view
+    if (Array.isArray(p.hidden)) state.hidden = new Set(p.hidden.filter((x: unknown) => typeof x === 'string'))
+    state.collapsedRepos = new Set(Array.isArray(p.collapsedRepos) ? p.collapsedRepos : [])
+    state.openGroups = new Set(Array.isArray(p.openGroups) ? p.openGroups : [])
+    state.closedGroups = new Set(Array.isArray(p.closedGroups) ? p.closedGroups : [])
+    if (typeof p.repo === 'string' || p.repo === null) state.repo = p.repo
+    if (p.groupBy === 'topic' || p.groupBy === 'status') state.groupBy = p.groupBy
+    if (p.graphSections && typeof p.graphSections === 'object') {
+      for (const [k, v] of Object.entries(p.graphSections)) if (v === 'open' || v === 'closed' || v === 'all') state.graphSections[k] = v
+    }
+  } catch {
+    /* 저장된 설정이 없으면 기본값 */
+  }
+}
+
+/* ---------- 시작 ---------- */
+
+function mount(): void {
+  const top = h(
+    'header',
+    { class: 'top' },
+    h('div', { class: 'brand' }, h('span', { class: 'mark' }), h('h1', null, 'Pod'), syncEl, h('span', { class: 'spacer' }), refreshBtn),
+    h('div', { class: 'toolbar' }, viewSeg, h('label', { class: 'search' }, icon('search'), searchInput, h('kbd', null, '/')), statusBtn),
+    repoBar
+  )
+  const app = document.getElementById('app')!
+  app.replaceChildren(top, body, controller.el)
+  body.addEventListener('scroll', () => {
+    hideHover()
+    closeMenu()
+  })
+  document.addEventListener('keydown', (ev) => {
+    const typing = (ev.target as HTMLElement)?.closest?.('input, textarea')
+    if (ev.key === '/' && !typing && !sheetOpen()) {
+      ev.preventDefault()
+      searchInput.focus()
+    } else if (ev.key === 'i' && !typing && !sheetOpen() && !detail.isOpen() && !ev.metaKey && !ev.ctrlKey) {
+      ev.preventDefault()
+      controller.focus()
+    } else if ((ev.key === '[' || ev.key === ']') && !typing && !sheetOpen()) {
+      ev.preventDefault()
+      cycleRepo(ev.key === ']' ? 1 : -1)
+    } else if (ev.key === 'Escape' && detail.isOpen() && !typing) {
+      detail.close()
+    } else if (ev.key === 'Escape' && document.activeElement === searchInput) {
+      searchInput.value = ''
+      state.query = ''
+      searchInput.blur()
+      renderBody()
+    }
+  })
+}
+
+async function start(): Promise<void> {
+  mount()
+  await loadPrefs()
+  renderTop()
+  renderBody()
+  orca.plugin?.on?.('pod.changed', (snap: Snapshot) => receive(snap))
+  await sync(true)
+  // 이벤트가 오지 않는 변화(도구 호출, 메시지)를 위해 화면이 보일 때만 주기적으로 맞춘다.
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') void sync()
+  }, 4000)
+  window.setInterval(tick, 10_000)
+}
+
+void start()
