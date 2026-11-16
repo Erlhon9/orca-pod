@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3
+
+- Limit session hover previews to 560 pixels or the visible panel height, whichever is smaller. Scroll long questions inside the preview while keeping the session heading and actions visible.
+- Recalculate hover bounds against the visible viewport when an embedded panel resizes.
+
 ## 0.4.2
 
 - Show pending questions, choices, descriptions, and multiple-selection guidance directly in session details and hover cards. Preserve structured question inputs from Claude transcripts and clear the pending state when their tool result arrives.

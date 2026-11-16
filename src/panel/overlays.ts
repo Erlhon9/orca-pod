@@ -13,8 +13,12 @@ let hideTimer = 0
 function place(): void {
   if (!anchor || !anchor.isConnected) return hideNow()
   const r = anchor.getBoundingClientRect()
-  const vw = window.innerWidth
-  const vh = window.innerHeight
+  // 임베디드 패널에서는 레이아웃 뷰포트보다 실제 보이는 영역이 작을 수 있다.
+  const view = window.visualViewport
+  const vw = Math.min(window.innerWidth, document.documentElement.clientWidth, view?.width ?? Infinity)
+  const vh = Math.min(window.innerHeight, document.documentElement.clientHeight, view?.height ?? Infinity)
+  card.style.maxHeight = `${Math.max(0, Math.min(560, vh - 16))}px`
+  card.style.maxWidth = `${Math.max(0, vw - 16)}px`
   const cw = card.offsetWidth
   const ch = card.offsetHeight
   const gap = 8
@@ -84,6 +88,7 @@ card.addEventListener('mouseleave', () => {
 // 비동기로 질문·출력이 들어와 높이가 바뀌어도 화면 안에 머문다.
 new ResizeObserver(() => { if (card.classList.contains('show')) place() }).observe(card)
 window.addEventListener('resize', () => { if (card.classList.contains('show')) place() })
+window.visualViewport?.addEventListener('resize', () => { if (card.classList.contains('show')) place() })
 
 /* ---------- 메뉴 ---------- */
 

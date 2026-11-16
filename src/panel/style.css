@@ -1186,10 +1186,12 @@ kbd {
 /* ---------- 호버 카드 ---------- */
 
 .hovercard {
+  display: flex;
+  flex-direction: column;
   position: fixed;
   z-index: 40;
   width: min(340px, calc(100vw - 16px));
-  max-height: calc(100vh - 16px);
+  max-height: min(560px, calc(100vh - 16px));
   overflow: auto;
   overscroll-behavior: contain;
   padding: 12px;
@@ -1209,6 +1211,17 @@ kbd {
   opacity: 1;
   transform: none;
   pointer-events: auto;
+}
+
+.hovercard > div {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hovercard .hc-head,
+.hovercard .hc-actions {
+  flex: none;
 }
 
 .hc-head {
@@ -1283,6 +1296,9 @@ kbd {
 }
 
 .hc-rows {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   min-width: 0;
   grid-template-columns: minmax(0, 1fr);
   display: grid;
