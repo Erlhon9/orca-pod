@@ -16,8 +16,6 @@ export interface ControllerApi {
   call<T = any>(name: string, input?: unknown, quiet?: boolean): Promise<T>
   toast(message: string, kind?: 'ok' | 'err'): void
   openUrl(url: string): void
-  /** 작업 창이 열려 있으면 관제 줄을 숨긴다. */
-  hidden(): boolean
 }
 
 export interface ControlView {
@@ -315,10 +313,6 @@ export function createController(api: ControllerApi) {
   let showGuide = false
 
   function update(): void {
-    const hide = api.hidden()
-    el.classList.toggle('off', hide)
-    document.getElementById('app')?.classList.toggle('has-dock', !hide)
-    if (hide) return
     el.classList.toggle('open', open)
     el.dataset.state = view.busy ? 'working' : ''
     // 받은 대화 항목이 이상해도 관제 줄이 멈추지 않게 한다.

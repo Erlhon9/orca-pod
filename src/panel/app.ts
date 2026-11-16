@@ -884,7 +884,7 @@ const VIEWS: { id: View; label: string; icon: string }[] = [
 ]
 
 function setView(v: View): void {
-  if (detail.isInline()) {
+  if (detail.isOpen()) {
     detail.dispose()
     graph.select(null)
   }
@@ -1595,6 +1595,7 @@ function detailOpenUrl(url: string): void {
 }
 
 const detail = createDetail({
+  content: body,
   snap: () => state.snap,
   call,
   openWorkspace,
@@ -1626,8 +1627,7 @@ const controller = createController({
   snap: () => state.snap,
   call,
   toast,
-  openUrl: (url) => detailOpenUrl(url),
-  hidden: () => detail.isOpen()
+  openUrl: (url) => detailOpenUrl(url)
 })
 
 /* ---------- 본문: 그래프 ---------- */
@@ -1804,7 +1804,7 @@ function mount(): void {
     if (ev.key === '/' && !typing && !sheetOpen()) {
       ev.preventDefault()
       searchInput.focus()
-    } else if (ev.key === 'i' && !typing && !sheetOpen() && !detail.isOpen() && !ev.metaKey && !ev.ctrlKey) {
+    } else if (ev.key === 'i' && !typing && !sheetOpen() && !ev.metaKey && !ev.ctrlKey) {
       ev.preventDefault()
       controller.focus()
     } else if ((ev.key === '[' || ev.key === ']') && !typing && !sheetOpen()) {

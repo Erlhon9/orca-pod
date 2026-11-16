@@ -2418,13 +2418,6 @@ html.light .screen {
   background: color-mix(in srgb, #000 4%, var(--card));
 }
 
-.keys {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 10px 0;
-}
-
 .key {
   min-width: 30px;
   height: 26px;
@@ -3362,10 +3355,6 @@ html.light .md-code {
   position: relative;
   z-index: 4;
   transition: border-color 0.25s;
-}
-
-.dock.off {
-  display: none;
 }
 
 .dock[data-state='blocked'] {

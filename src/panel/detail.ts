@@ -1,13 +1,14 @@
-// 상세(작업실): 워크스페이스 하나를 열어 두고 에이전트 터미널을 보면서 지시를 보낸다.
+// 상세(작업실): 워크스페이스의 대화와 터미널 출력을 읽는다. 지시는 하단 관제에서 보낸다.
 import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import type { ChatItem } from '../transcript'
-import { attachments } from './attach'
 import { markdown, renderChat, setLinkHandler } from './chat'
 import { closeMenu, hideHover, openMenu } from './overlays'
 import { AGENT_STATE_LABEL, agentName, agoFull, avatar, duration, fill, h, icon, statusColor, statusLabel, topicColor } from './ui'
 
 export interface DetailApi {
+  /** 상세를 펼쳐도 상단 탐색과 하단 관제는 남겨 둔다. */
+  content: HTMLElement
   snap(): Snapshot | null
   call<T = any>(name: string, input?: unknown, quiet?: boolean): Promise<T>
   openWorkspace(w: WorkspaceView): void
@@ -36,17 +37,6 @@ export interface OpenOptions {
 const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)'
 
 type Session = { kind: 'agent'; agent: AgentView } | { kind: 'terminal'; handle: string; title: string; connected: boolean; setup: boolean }
-
-const KEYS: { key: string; label: string; title: string }[] = [
-  { key: 'enter', label: '⏎', title: 'Enter' },
-  { key: 'esc', label: 'Esc', title: 'Esc' },
-  { key: 'up', label: '↑', title: t('위') },
-  { key: 'down', label: '↓', title: t('아래') },
-  { key: '1', label: '1', title: '1' },
-  { key: '2', label: '2', title: '2' },
-  { key: '3', label: '3', title: '3' },
-  { key: 'tab', label: 'Tab', title: 'Tab' }
-]
 
 export function createDetail(api: DetailApi) {
   setLinkHandler((url) => api.openUrl(url))
@@ -374,7 +364,7 @@ export function createDetail(api: DetailApi) {
       )
       return
     }
-    sessionBody.replaceChildren(main, ...controls(handle))
+    sessionBody.replaceChildren(main)
   }
 
   /** 세션별로 대화/터미널 보기를 기억한다. 기본은 대화. */
@@ -519,74 +509,7 @@ export function createDetail(api: DetailApi) {
     stopPoll()
     void tick()
     poll = window.setInterval(() => void tick(), 1500)
-    refreshChat = () => window.setTimeout(() => void tick(), 400)
     return box
-  }
-
-  let refreshChat: () => void = () => {}
-
-  /** 키 버튼과 지시 입력창. */
-  function controls(handle: string): HTMLElement[] {
-    const refresh = () => {
-      if (screen) window.setTimeout(() => void pull(handle), 300)
-      else refreshChat()
-    }
-    const send = h('button', { class: 'send', title: t('보내기 (⌘Enter)'), disabled: true }, icon('send')) as HTMLButtonElement
-    const area = h('textarea', { rows: 1, placeholder: t('지시 보내기') }) as HTMLTextAreaElement
-    const composer = h('div', { class: 'composer stack' })
-    const sync = () => (send.disabled = sending || (!area.value.trim() && pics.count() === 0))
-    const pics = attachments(composer, area, { call: (n, i, q) => api.call(n, i, q), toast: (m, k) => api.toast(m, k), onChange: sync })
-    composer.append(pics.tray, h('div', { class: 'composer-row' }, pics.button, area, send))
-    area.addEventListener('input', sync)
-    let sending = false
-    const submit = async () => {
-      if (send.disabled || sending) return
-      sending = true
-      send.disabled = true
-      area.readOnly = true
-      pics.lock(true)
-      try {
-        const body = await pics.compose(area.value)
-        await api.call('pod.send', { terminal: handle, text: body })
-        area.value = ''
-        pics.clear()
-        stickBottom = true
-        refresh()
-      } catch {
-      } finally {
-        sending = false
-        area.readOnly = false
-        pics.lock(false)
-        sync()
-      }
-    }
-    send.addEventListener('click', () => void submit())
-    area.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
-        ev.preventDefault()
-        void submit()
-      }
-    })
-    const key = (k: (typeof KEYS)[number]) =>
-      h('button', { class: 'key', title: k.title, onClick: () => void api.call('pod.key', { terminal: handle, key: k.key }).then(refresh) }, k.label)
-    let armed = 0
-    const stop = h('button', { class: 'key danger', title: t('중단 (Ctrl-C)') }, t('중단'))
-    stop.addEventListener('click', () => {
-      if (!armed) {
-        stop.textContent = t('한 번 더')
-        armed = window.setTimeout(() => {
-          armed = 0
-          stop.textContent = t('중단')
-        }, 2000)
-        return
-      }
-      window.clearTimeout(armed)
-      armed = 0
-      stop.textContent = t('중단')
-      void api.call('pod.interrupt', { terminal: handle }).then(() => api.toast(t('중단 신호를 보냈습니다')))
-    })
-    queueMicrotask(() => area.focus())
-    return [h('div', { class: 'keys' }, KEYS.map(key), stop), composer]
   }
 
   function update(): void {
@@ -599,7 +522,7 @@ export function createDetail(api: DetailApi) {
     if (s) sessionKey = keyOf(s)
     if (s) renderSessionHead(w, s)
     else sessionHead?.replaceChildren()
-    // 세션이 바뀌었을 때만 본문(화면 미러·입력창)을 새로 만든다.
+    // 세션이 바뀌었을 때만 본문을 새로 만든다.
     const sig = s ? `${keyOf(s)}|${terminalOf(s) ?? ''}|${s.kind === 'agent' && !terminalOf(s) ? s.agent.updatedAt : ''}` : 'none'
     if (sig !== renderedSession) {
       renderedSession = sig
@@ -607,40 +530,10 @@ export function createDetail(api: DetailApi) {
     }
   }
 
-  const rectInset = (r: DOMRect) =>
-    `inset(${Math.max(0, r.top)}px ${Math.max(0, window.innerWidth - r.right)}px ${Math.max(0, window.innerHeight - r.bottom)}px ${Math.max(0, r.left)}px round 12px)`
-
-  function backdrop(on: boolean): void {
-    const app = document.getElementById('app')
-    if (!app?.animate) return
-    app.animate(
-      on
-        ? [{ transform: 'scale(1)', filter: 'brightness(1)' }, { transform: 'scale(0.965)', filter: 'brightness(0.6)' }]
-        : [{ transform: 'scale(0.965)', filter: 'brightness(0.6)' }, { transform: 'scale(1)', filter: 'brightness(1)' }],
-      { duration: on ? 420 : 300, easing: EASE, fill: 'forwards' }
-    )
-  }
-
-  /** 누른 요소 자리에서 화면 전체로 펼친다. 요소가 없으면 옆에서 밀려 들어온다. */
-  function morphIn(el: HTMLElement, from: Element | null): void {
-    const r = from?.isConnected ? from.getBoundingClientRect() : null
-    if (!r || !el.animate || r.width === 0) {
-      el.classList.add('slide')
-      return
-    }
-    el.animate([{ clipPath: rectInset(r), opacity: 0.5 }, { clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }], {
-      duration: 440,
-      easing: EASE
-    })
-    for (const [i, child] of [...el.children].entries()) {
-      ;(child as HTMLElement).animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], {
-        duration: 320,
-        delay: 110 + i * 45,
-        easing: EASE,
-        fill: 'backwards'
-      })
-    }
-    backdrop(true)
+  /** 확대 보기도 본문 영역 안에 두어 관제 입력창을 가리지 않는다. */
+  function placeExpanded(el: HTMLElement): void {
+    const r = api.content.getBoundingClientRect()
+    Object.assign(el.style, { top: `${r.top}px`, left: `${r.left}px`, width: `${r.width}px`, height: `${r.height}px`, right: 'auto', bottom: 'auto' })
   }
 
   /** 창 모드: 누른 노드의 반대편에 세로로 붙이고, 좁으면 아래쪽 시트로 띄운다. */
@@ -736,6 +629,9 @@ export function createDetail(api: DetailApi) {
         hostObserver.observe(host)
       } else {
         document.body.append(root)
+        placeExpanded(root)
+        hostObserver = new ResizeObserver(() => root && placeExpanded(root))
+        hostObserver.observe(api.content)
       }
     } else if (host) {
       // 이미 떠 있는 창: 다른 노드를 누르면 내용만 바꾸고 살짝 강조한다.
@@ -744,8 +640,7 @@ export function createDetail(api: DetailApi) {
     update()
     api.onSelect?.({ wsId: id, agentKey: sessionKey?.startsWith('a:') ? sessionKey.slice(2) : null })
     if (fresh && root) {
-      if (host) growFrom(root, origin)
-      else morphIn(root, origin)
+      growFrom(root, origin)
     }
   }
 
@@ -824,6 +719,8 @@ export function createDetail(api: DetailApi) {
       return
     }
     stopPoll()
+    hostObserver?.disconnect()
+    hostObserver = null
     screen = null
     memo?.blur()
     const el = root
@@ -844,7 +741,8 @@ export function createDetail(api: DetailApi) {
     const r = target?.getBoundingClientRect()
     if (r && r.width > 0 && el.animate) {
       for (const child of el.children) (child as HTMLElement).animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, fill: 'forwards' })
-      const anim = el.animate([{ clipPath: 'inset(0px 0px 0px 0px round 0px)', opacity: 1 }, { clipPath: rectInset(r), opacity: 0.3 }], {
+      const to = el.getBoundingClientRect()
+      const anim = el.animate([{ transformOrigin: '0 0', transform: 'none', opacity: 1 }, { transformOrigin: '0 0', transform: `translate(${r.left - to.left}px, ${r.top - to.top}px) scale(${Math.max(0.05, r.width / to.width)}, ${Math.max(0.05, r.height / to.height)})`, opacity: 0.3 }], {
         duration: 320,
         easing: EASE,
         fill: 'forwards'
@@ -854,7 +752,6 @@ export function createDetail(api: DetailApi) {
       el.classList.add('closing')
       window.setTimeout(() => el.remove(), 180)
     }
-    backdrop(false)
   }
 
   /** 작업실을 열고 바로 새 세션을 시작한다. */

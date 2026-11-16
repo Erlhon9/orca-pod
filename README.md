@@ -4,13 +4,13 @@
 
 ![Pod graph with fictional example workspaces](images/graph.jpg)
 
-Pod brings your repositories, topics, workspaces, and agent sessions onto one map. See what needs your attention, open a session without leaving the graph, and send the next instruction from the same place.
+Pod brings your repositories, topics, workspaces, and agent sessions onto one map. See what needs your attention, open a session without leaving the graph, and coordinate the next instruction through Control.
 
 ## What you can do
 
 - **Explore the graph.** Group workspaces by topic or status, collapse groups, zoom, and drag cards between topics.
 - **Find sessions that need you.** The board and agent views surface approval requests, unanswered questions, and active sessions.
-- **Work inside the map.** Open a session window, read Claude conversations, view terminal output, send instructions, and attach images.
+- **Work inside the map.** Open a session window, read Claude conversations, and view terminal output. Control stays available while you read.
 - **Coordinate with Control.** Ask for a status update or relay a message to a selected session. Use the ✦ button on a session row to add its reference to the input.
 - **Keep things organized.** Create topics and subtopics, start sessions, edit workspace notes, and close leftover terminal tabs.
 
@@ -18,7 +18,7 @@ Pod brings your repositories, topics, workspaces, and agent sessions onto one ma
 
 ### Session window
 
-Read a conversation without navigating away from the graph. Send follow-ups to terminal-backed sessions; Orca chat sessions continue in their native chat window.
+Read a conversation without navigating away from the graph. Use Control to coordinate supported sessions, or open the session in Orca for direct interaction.
 
 ![Session window with a short fictional conversation](images/session.jpg)
 
@@ -70,7 +70,7 @@ Review the permissions shown by Orca before approving the plugin. Keep a develop
 
 ## Sessions and delivery
 
-Claude terminal sessions can appear as conversations using their local transcripts. Codex sessions and other terminals use the terminal view when a conversation view is unavailable. Open a session in Orca when you need its full native interface.
+Claude terminal sessions can appear as conversations using their local transcripts. Codex sessions and other terminals use the terminal view when a conversation view is unavailable. Session windows in Pod are read-only. Open a session in Orca when you need its full native interface.
 
 Control can relay instructions to supported agent terminal sessions. Claude-to-Claude chat messaging uses Claude Code messages. A message being accepted or queued does not mean the receiving agent has finished the task.
 
