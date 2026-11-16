@@ -9,6 +9,19 @@ let anchor: Element | null = null
 let builder: (() => HTMLElement | null) | null = null
 let showTimer = 0
 let hideTimer = 0
+let dragging = false
+let waitForPointer = false
+
+/** 놓은 직후 카드가 다시 그려져도 마우스를 움직이기 전에는 호버를 열지 않는다. */
+export function setHoverDragging(active: boolean): void {
+  dragging = active
+  waitForPointer = !active
+  hideNow()
+}
+
+window.addEventListener('pointermove', (ev) => {
+  if (!dragging && ev.buttons === 0) waitForPointer = false
+})
 
 function place(): void {
   if (!anchor || !anchor.isConnected) return hideNow()
@@ -45,6 +58,7 @@ export function hideHover(): void {
 
 /** 열린 카드의 내용을 새 데이터로 다시 그린다(스냅샷 갱신 시). */
 export function refreshHover(): void {
+  if (dragging || waitForPointer) return hideNow()
   if (!builder || !card.classList.contains('show')) return
   // 목록을 다시 그리면 기준 요소가 바뀌므로 같은 키를 가진 새 요소로 옮겨 붙인다.
   if (anchor && !anchor.isConnected) {
@@ -62,9 +76,11 @@ export function hoverable(el: Element, build: () => HTMLElement | null, delay = 
   if (key) el.setAttribute('data-hk', key)
   el.addEventListener('mouseenter', (ev) => {
     ev.stopPropagation()
+    if (dragging || waitForPointer) return
     clearTimeout(hideTimer)
     clearTimeout(showTimer)
     showTimer = window.setTimeout(() => {
+      if (dragging || waitForPointer) return
       const content = build()
       if (!content) return
       anchor = el

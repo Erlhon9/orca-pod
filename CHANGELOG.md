@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.6
+
+- Hide hover previews when a graph-card drag starts and prevent pending timers or background updates from reopening them. Resume previews after the pointer moves and enters a card again, including after cancelled drags.
+
 ## 0.4.5
 
 - Keep workspace cards where you drop them in the graph, including after background updates and reopening the panel. Remember positions separately for each repository view and topic/status grouping.

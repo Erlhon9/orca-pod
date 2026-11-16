@@ -4,7 +4,7 @@ import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import type { GraphPoint } from '../graph-layout'
 import { topicRoot } from '../model'
-import { openMenu } from './overlays'
+import { openMenu, setHoverDragging } from './overlays'
 import { burstAt, celebrate, floatAt, pop, shake } from './fx'
 import { AGENT_STATE_LABEL, agentGlyph, clip, h, icon, s, statusColor, statusLabel, topicColor } from './ui'
 
@@ -972,6 +972,7 @@ export function createGraph(hooks: GraphHooks) {
         if (Math.hypot(dx, dy) < 6) return
         active = true
         dragging = n
+        setHoverDragging(true)
         window.getSelection()?.removeAllRanges()
         cancelAnimationFrame(settle)
         place(1)
@@ -1021,6 +1022,7 @@ export function createGraph(hooks: GraphHooks) {
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', up)
       if (!active) return
+      setHoverDragging(false)
       // 끌기 끝에 따라오는 click 은 무시한다.
       suppressClick = true
       window.setTimeout(() => (suppressClick = false), 0)
