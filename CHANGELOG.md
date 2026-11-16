@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.9
+
+- Add a persistent Add session button below session conversations and terminal views. Choose Claude, Codex, or a terminal without scrolling back to the tab bar.
+- Label the tab-bar action Add session, and prevent duplicate session launches while creation is in progress.
+
 ## 0.4.8
 
 - Follow confirmed `/clear` operations in local native Claude chats. Remove previous messages and tool groups from Pod, and show only the new provider conversation when it becomes available.

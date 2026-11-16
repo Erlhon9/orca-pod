@@ -99,6 +99,7 @@ export function createDetail(api: DetailApi) {
   /** 새 세션을 열고, 만들어지면 그 탭을 고른다. */
   function startSession(w: WorkspaceView, kind: 'claude' | 'codex' | 'terminal'): void {
     closeMenu()
+    if (launching) return
     const label = LABEL[kind]
     launching = label
     update()
@@ -218,9 +219,10 @@ export function createDetail(api: DetailApi) {
     )
     scroller.scrollLeft = prevScroll
     // 탭이 많아도 보이도록 세션 추가 버튼은 오른쪽 끝에 고정한다.
-    const add = h('button', { class: 'd-tab add', title: t('새 세션') }, h('span', { class: 'term' }, icon('plus')), h('span', null, t('세션')))
+    const add = h('button', { class: 'd-tab add d-add-session', title: t('새 세션'), disabled: !!launching }, h('span', { class: 'term' }, icon('plus')), h('span', null, t('세션 추가')))
     add.addEventListener('click', () => addMenu(add, w))
     tabs.append(add)
+    root?.querySelectorAll<HTMLButtonElement>('.d-add-session').forEach(button => { button.disabled = !!launching })
   }
 
   /** 탭의 닫기 버튼. 살아 있는 터미널은 두 번 눌러야 닫힌다. */
@@ -356,19 +358,13 @@ export function createDetail(api: DetailApi) {
     const agent = s.kind === 'agent' ? s.agent : null
     const chatOk = agent && agent.type === 'claude' && !noTranscript.has(agent.key) && modeOf(s) === 'chat'
     const main = chatOk ? buildChat(w, agent!, handle) : handle ? buildScreen(handle) : buildChatFallback(w, agent!)
-    if (!handle) {
-      // 대화창 세션: 읽기만 하고 이어서 쓰는 건 Orca 대화창에서.
-      sessionBody.replaceChildren(
-        main,
-        h(
-          'div',
-          { class: 'chat-foot' },
-          h('button', { class: 'pill-btn primary', onClick: () => api.focusAgent(w, agent!) }, icon('open'), t('대화창에서 이어 하기'))
-        )
-      )
-      return
-    }
-    sessionBody.replaceChildren(main)
+    // 본문을 스크롤해도 세션 추가와 Orca 이동 버튼은 계속 보인다.
+    const add = h('button', { class: 'pill-btn d-add-session', disabled: !!launching, onClick: (ev: Event) => addMenu(ev.currentTarget as Element, w) }, icon('plus'), t('세션 추가'))
+    sessionBody.replaceChildren(
+      main,
+      h('div', { class: 'chat-foot' }, add,
+        !handle ? h('button', { class: 'pill-btn primary', onClick: () => api.focusAgent(w, agent!) }, icon('open'), t('대화창에서 이어 하기')) : null)
+    )
   }
 
   /** 세션별로 대화/터미널 보기를 기억한다. 기본은 대화. */

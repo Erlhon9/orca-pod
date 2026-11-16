@@ -3379,7 +3379,10 @@ html.light .md-code {
 
 .chat-foot {
   display: flex;
-  justify-content: flex-end;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
   padding: 10px;
   border-top: 1px solid var(--line);
 }
