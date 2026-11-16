@@ -1,7 +1,7 @@
 // 상세(작업실): 워크스페이스의 대화와 터미널 출력을 읽는다. 지시는 하단 관제에서 보낸다.
 import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
-import type { ChatItem } from '../transcript'
+import type { Conversation } from '../conversation'
 import { pendingQuestions, readQuestions } from '../questions'
 import { questionCard } from './questions'
 import { markdown, renderChat, setLinkHandler } from './chat'
@@ -440,6 +440,7 @@ export function createDetail(api: DetailApi) {
     let first = true
     let waitingSince = 0
     let promptAt = 0
+    let context: string | undefined
     const live = () => ws()?.agents.find((x) => x.key === a.key) ?? a
     let busy = false
     const tick = async () => {
@@ -454,13 +455,21 @@ export function createDetail(api: DetailApi) {
     const tickOnce = async () => {
       const cur = live()
       const others = (ws()?.agents ?? []).filter((x) => x.key !== a.key).map((x) => x.key)
-      let r: { ok: boolean; items: ChatItem[]; truncated: boolean; updatedAt: number }
+      let r: Conversation
       try {
         r = await api.call('pod.conversation', { path: w.path, key: a.key, type: a.type, title: cur.title, prompt: cur.prompt, since: cur.since, others }, true)
       } catch {
         r = { ok: false, items: [], truncated: false, updatedAt: 0 }
       }
       if (!box.isConnected) return
+      if (r.context && r.context !== context) {
+        context = r.context
+        sig = ''
+        first = false
+        openGroups.clear()
+        stickBottom = true
+        inner.replaceChildren(h('div', { class: 'chat-empty' }, icon('message'), h('div', null, t('새 대화'))))
+      }
       if (!r.ok || r.items.length === 0) {
         // 이미 읽은 대화는 일시적인 빈 응답이나 읽기 오류로 지우지 않는다.
         if (!first) return

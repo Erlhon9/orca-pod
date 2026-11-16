@@ -1,6 +1,6 @@
 // 패널 <-> 워커 사이의 요청·알림 목록. 양쪽이 같은 이름을 쓰도록 한 곳에 적어 둔다.
 import type { Snapshot } from './model'
-import type { ChatItem } from './transcript'
+import type { Conversation } from './conversation'
 import type { ControlView } from './runtime'
 import type { ControlProvider } from './relay'
 import type { ControlAgentOption } from './control-agents'
@@ -36,7 +36,7 @@ declare module 'orca' {
     /** 세션의 Claude 대화 기록. 못 찾으면 ok:false. */
     'pod.conversation': {
       input: { path: string; key: string; type: string; title?: string; prompt?: string }
-      output: { ok: boolean; items: ChatItem[]; truncated: boolean; updatedAt: number }
+      output: Conversation
     }
     'pod.closeTerminals': { input: { terminals: string[] }; output: { closed: number; failed: string[] } }
     'pod.saveTopics': { input: { repoId: string; topics: unknown }; output: { ok: true } }

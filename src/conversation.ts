@@ -3,6 +3,7 @@ import { open, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { chatSessionId, claudeProjectDir, emptyState, feed, type ChatItem, type TranscriptState } from './transcript'
+import { readNativeContext, type NativeContext } from './native-context'
 
 export interface ConversationQuery {
   path: string
@@ -22,6 +23,8 @@ export interface Conversation {
   /** 앞부분을 건너뛰고 읽었으면 true. */
   truncated: boolean
   updatedAt: number
+  /** Orca가 확인한 /clear 경계. 빈 응답이어도 이전 대화를 제거해야 한다. */
+  context?: string
 }
 
 /** 기록 폴더. 테스트가 HOME 을 바꿔 쓸 수 있게 부를 때마다 구한다. */
@@ -39,6 +42,7 @@ interface Open {
 
 const files = new Map<string, Open>()
 const located = new Map<string, { file: string; at: number }>()
+const contexts = new Map<string, NativeContext>()
 
 async function readRange(file: string, from: number, to: number): Promise<Buffer> {
   const fh = await open(file, 'r')
@@ -154,9 +158,24 @@ function serial<T>(key: string, run: () => Promise<T>): Promise<T> {
   return next
 }
 
-export async function readConversation(q: ConversationQuery): Promise<Conversation> {
+export async function readConversation(q: ConversationQuery, native = readNativeContext): Promise<Conversation> {
   const none: Conversation = { ok: false, items: [], truncated: false, updatedAt: 0 }
   if (q.type !== 'claude') return none
+  const key = JSON.stringify([root(), q.path, q.key])
+  const current = await native(q.key, q.path)
+  if (current) contexts.set(key, current)
+  const context = current ?? contexts.get(key)
+  if (context) {
+    // 초기화 뒤에는 오래된 제목/요청이나 10분 파일 캐시로 되돌아가지 않는다.
+    located.delete(q.key)
+    const empty = context.boundary ? { ...none, ok: true, context: context.boundary } : none
+    if (!context.providerId) return empty
+    const file = await byId(context.providerId, q.path)
+    if (!file) return empty
+    located.set(q.key, { file, at: Date.now() })
+    const result = await serial(file, () => readFile(file, none))
+    return context.boundary ? { ...result, context: context.boundary } : result
+  }
   const file = await locate(q)
   if (!file) return none
   return serial(file, () => readFile(file, none))

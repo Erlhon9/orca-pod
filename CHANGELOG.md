@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.8
+
+- Follow confirmed `/clear` operations in local native Claude chats. Remove previous messages and tool groups from Pod, and show only the new provider conversation when it becomes available.
+- Preserve the current view during temporary read failures without restoring pre-clear prompts or cached transcript files.
+
 ## 0.4.7
 
 - Drag topic and status group labels to your preferred positions. Remember them across updates, collapsing and reopening groups, and reopening the panel, alongside manually placed workspace cards.
