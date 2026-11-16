@@ -23,7 +23,7 @@ function fakeProc() {
   return p
 }
 
-function setup(sessionId: string | null = null) {
+function setup(sessionId: string | null = null, onStop?: () => void) {
   const procs: any[] = []
   const spawned: string[][] = []
   const saved: (string | null)[] = []
@@ -38,7 +38,7 @@ function setup(sessionId: string | null = null) {
       },
       emit: (v) => (last = v),
       saveSession: (id) => saved.push(id),
-      history: async () => [{ k: 'text', text: '지난 답', at: 1 }]
+      history: async () => [{ k: 'text', text: '지난 답', at: 1 }], onStop
     },
     sessionId
   )
@@ -47,6 +47,28 @@ function setup(sessionId: string | null = null) {
 
 const line = (o: unknown) => `${JSON.stringify(o)}\n`
 
+test('관제 중단·초기화·종료는 진행 중 도구 연결도 폐기한다', () => {
+  let revoked = 0
+  const { rt } = setup(null, () => { revoked++ })
+  rt.send('대기')
+  rt.stop()
+  assert.equal(revoked, 1)
+  rt.reset()
+  assert.equal(revoked, 2)
+  rt.shutdown()
+  assert.equal(revoked, 3)
+})
+
+test('관제 프로세스가 예기치 않게 종료돼도 도구 연결을 폐기한다', () => {
+  let revoked = 0
+  const { rt, procs } = setup(null, () => { revoked++ })
+  rt.send('대기')
+  procs[0].emit('exit', 1)
+  assert.equal(revoked, 1)
+  assert.equal(rt.view().busy, false)
+  rt.shutdown()
+})
+
 test('Codex의 인계 문맥은 Claude 입력에 포함하고 화면에는 사용자가 쓴 말만 보인다', () => {
   const { rt, procs } = setup()
   try {
@@ -54,7 +76,7 @@ test('Codex의 인계 문맥은 Claude 입력에 포함하고 화면에는 사�
     const sent = JSON.parse(procs[0].written.join(''))
     assert.ok(sent.message.content[0].text.includes('Previous Codex context'))
     assert.ok(sent.message.content[0].text.endsWith('이어서 확인해줘'))
-    assert.equal(rt.view().items[0].text, '이어서 확인해줘')
+    assert.equal(rt.view().items.find(item => item.k === 'user')?.text, '이어서 확인해줘')
   } finally { rt.shutdown() }
 })
 

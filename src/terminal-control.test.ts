@@ -58,7 +58,7 @@ test('실행 결과가 불명확하면 새 에이전트를 자동으로 중복 �
     await assert.rejects(() => runtime.send('다시 요청'))
     assert.equal(launched.length, 1)
     assert.equal(runtime.view().busy, false)
-    assert.equal(runtime.view().items[0].text, '첫 요청')
+    assert.equal(runtime.view().items.find(item => item.k === 'user')?.text, '첫 요청')
   } finally { await runtime.shutdown() }
 })
 

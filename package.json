@@ -1,0 +1,17 @@
+{
+  "name": "orca-pod",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "types": "orca plugin types . --json",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "orca plugin test . --json",
+    "test:security": "bun build src/control.test.ts src/relay.test.ts src/control-bridge.test.ts --outdir .security-tests --target node --format esm && node --test .security-tests/*.js",
+    "build:check": "bun build src/panel/app.ts --outfile .build-check/panel.js --target browser && bun build src/worker.ts --outfile .build-check/worker.js --target node"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
+  }
+}

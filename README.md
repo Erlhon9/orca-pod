@@ -40,7 +40,7 @@ See sessions that need attention first, followed by workspaces grouped by topic 
 
 - Orca **1.4.248 or later** on macOS.
 - The `orca` command available in your terminal.
-- An installed and signed-in agent CLI for Control. Claude Code is required for AI topic suggestions.
+- An installed and signed-in agent CLI for Control. Embedded Claude Control and AI topic suggestions require Claude Code **2.1.325 or later**, including its restricted mode. Pod does not install or update agent CLIs.
 
 ## Install
 
@@ -72,7 +72,7 @@ Review the permissions shown by Orca before approving the plugin. Keep a develop
 
 Claude terminal sessions can appear as conversations using their local transcripts. Codex sessions and other terminals use the terminal view when a conversation view is unavailable. Session windows in Pod are read-only. Open a session in Orca when you need its full native interface.
 
-Control can relay instructions to supported agent terminal sessions. Claude-to-Claude chat messaging uses Claude Code messages. A message being accepted or queued does not mean the receiving agent has finished the task.
+Embedded Claude and Codex Control can relay instructions to supported agent terminal sessions. Chat sessions expose their latest request and reply for reading; open the chat in Orca to send a message. A message being accepted or queued does not mean the receiving agent has finished the task.
 
 Shell terminals are not message targets for Control.
 
@@ -81,7 +81,7 @@ Shell terminals are not message targets for Control.
 - **Choose a Control agent.** Select from the Orca agent catalog, with detected agents listed first. Claude and Codex have embedded adapters; other agents run in an Orca terminal using their existing installation, login, and permissions. Recent conversation context follows you when you switch.
 - **English-first UI.** English is the default for new users. The visible Language button shows the active setting; Korean and an automatic language option remain available. Existing choices are preserved.
 
-Terminal-based Control shows the agent’s terminal output in the panel and provides an Open in Orca button for login and approvals. An agent being detected does not prove it is logged in or has available usage. Codex Control currently reads chats' latest request and reply but cannot send messages to chat sessions. Claude and Codex Control can both send to supported terminal sessions. Switching agents carries recent visible conversation context without requiring a reply from the previous provider, so you can switch when its usage is exhausted.
+Terminal-based Control shows the agent’s terminal output in the panel and provides an Open in Orca button for login and approvals. These agents use their normal permissions; Pod's embedded tool restrictions do not apply to them. An agent being detected does not prove it is logged in or has available usage. Switching agents carries recent visible conversation context without requiring a reply from the previous provider, so you can switch when its usage is exhausted.
 
 ## Permissions and data
 
@@ -89,12 +89,20 @@ Pod requests access to workspaces, agents, terminals, and its own storage so it 
 
 AI features use your installed agent CLI and its account. Context passed to those features is processed by the selected provider. Topic suggestions include workspace metadata; Control uses session information to resolve the targets you request.
 
+Pod runs as an Orca trusted worker with your operating-system access. Embedded Claude and Codex expose only Pod's session-list, session-read, and terminal-send tools. Review the [security model and data flows](SECURITY.md) before enabling AI coordination.
+
 ## Development
 
 ```sh
-orca plugin dev watch . --check --shot ./.orca/shots --json
+npm ci --ignore-scripts
+npm run types
+npm run typecheck
+npm run test:security
+npm run build:check
 orca plugin test . --json
 orca plugin validate . --json
 ```
+
+Type generation and the full plugin tests require the Orca desktop app. CI runs the worker security tests and browser/worker builds without an Orca installation. The test transport uses fictional sessions and never sends to a live agent. Start live development with `orca plugin dev watch . --check --shot ./.orca/shots --json`.
 
 Public screenshots are generated with `tools/public-screenshots.sh` in the development repository. The capture uses fictional fixtures and does not query live workspaces. Review the images before publishing; the publisher checks their recorded hashes.

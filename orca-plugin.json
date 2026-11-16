@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "pod",
   "name": "Pod",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "See and steer every Orca workspace and agent session on one map",
   "cover": {
     "path": "images/graph.jpg",
@@ -66,9 +66,6 @@
       "kind": "storage:own"
     },
     {
-      "kind": "settings:own"
-    },
-    {
       "kind": "workspace:read"
     },
     {
@@ -85,9 +82,6 @@
     },
     {
       "kind": "terminal:send"
-    },
-    {
-      "kind": "notifications:show"
     }
   ]
 }

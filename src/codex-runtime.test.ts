@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { assert, test } from 'orca/testing'
-import { CodexControlRuntime } from './codex-runtime'
+import { CodexControlRuntime, type CodexDeps } from './codex-runtime'
 
-function setup(session: string | null = null, failResume = false) {
+function setup(session: string | null = null, failResume = false, tool?: CodexDeps['tool']) {
   const messages: any[] = []
   const tools: string[] = []
   const saved: (string | null)[] = []
@@ -28,7 +28,7 @@ function setup(session: string | null = null, failResume = false) {
       return p
     },
     emit: () => {}, saveSession: id => saved.push(id),
-    tool: async (name) => { tools.push(name); return { accepted: true, stage: 'queued' } }
+    tool: tool ?? (async (name) => { tools.push(name); return { accepted: true, stage: 'queued' } })
   }, session)
   const event = (method: string, params: unknown, id?: number) => procs.at(-1).stdout.write(JSON.stringify({ method, params, ...(id !== undefined ? { id } : {}) }) + '\n')
   return { rt, messages, tools, saved, procs, event }
@@ -55,6 +55,28 @@ test('Codex 초기화·외부 도구 차단·사진 전송·스트리밍 완료�
     assert.equal(rt.view().busy, false)
     assert.equal(rt.view().items.filter(i => i.k === 'text').length, 1)
   } finally { rt.shutdown() }
+})
+
+test('Codex 도구 조회 중 관제를 중단하면 이전 호출의 실행 권한도 사라진다', async () => {
+  let active!: () => boolean
+  let entered!: () => void
+  let release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const { rt, event } = setup(null, false, async (_name, _input, current) => {
+    active = current!
+    entered()
+    await pending
+    return { accepted: false }
+  })
+  try {
+    await rt.send('전달')
+    event('item/tool/call', { threadId: 'codex-thread', tool: 'pod_send_session', arguments: { key: 'key', text: 'Review' } }, 90)
+    await started
+    assert.equal(active(), true)
+    rt.stop()
+    assert.equal(active(), false)
+  } finally { release(); rt.shutdown() }
 })
 
 test('등록한 도구만 워커에 전달하고 다른 스레드의 도구 요청은 거부한다', async () => {

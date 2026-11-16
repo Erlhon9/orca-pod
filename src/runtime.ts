@@ -31,6 +31,7 @@ export interface RuntimeDeps {
   /** 이어 갈 세션의 지난 대화. */
   history(id: string): Promise<ChatItem[]>
   now?(): number
+  onStop?(): void
 }
 
 const SEND = 240
@@ -125,6 +126,7 @@ export class ControlRuntime {
     if (this.proc !== p) return
     this.proc = null
     const stopped = this.stopped.has(p)
+    if (!stopped) this.deps.onStop?.()
     if (this.busy) {
       this.busy = false
       if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now() })
@@ -218,6 +220,7 @@ export class ControlRuntime {
 
   /** 지금 답을 멈춘다. 프로세스를 내리고, 다음 메시지에서 같은 세션으로 이어 간다. */
   stop(): void {
+    this.deps.onStop?.()
     const p = this.proc
     if (!p) return
     this.stopped.add(p)
@@ -242,6 +245,7 @@ export class ControlRuntime {
 
   /** 프로세스를 내린다. 바로 떼어 내므로 그 뒤의 출력·종료는 새 대화에 섞이지 않는다. */
   shutdown(): void {
+    this.deps.onStop?.()
     if (this.idleTimer) clearTimeout(this.idleTimer)
     const p = this.proc
     if (!p) return

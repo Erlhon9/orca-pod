@@ -1,6 +1,7 @@
 // 영어 사전. 키는 한국어 원문(i18n.ts 의 t() 에 넘기는 문구와 정확히 같아야 한다), 값은 영어. `{이름}` 자리표시자는 그대로 둔다.
 // 워커가 보내는 오류·메모 문구(worker.ts·runtime.ts·transcript.ts·model.ts)도 패널이 표시할 때 번역하므로 여기에 둔다.
 export const EN: Record<string, string> = {
+  "대화창 — 최근 요청·답변만 조회해요. 직접 대화하려면 Orca에서 여세요.": "Chats — read the latest request and reply. Open the chat in Orca to continue directly.",
   " 버튼을 누르면 대상 칩이 추가돼요.": " to add a target chip.",
   "선택한 대상": "Selected targets",
   "대상 빼기": "Remove target",
@@ -186,7 +187,8 @@ export const EN: Record<string, string> = {
   "보낼 수 있는 곳": "Where it can send",
   "Claude·Codex 터미널 세션 — 입력창에 바로 입력돼요": "Claude / Codex terminal sessions — typed straight into the input",
   "Orca 대화창 세션 — 쪽지로 전달돼요(동료 세션의 요청으로 받아요)": "Orca chat sessions — delivered as a message (received as a request from a teammate session)",
-  "셸 터미널에는 보내지 않아요. 관제는 코드를 고치지 않고 orca 조회·보내기만 해요": "Never sent to shell terminals. Control does not edit code; it only reads from and sends through orca",
+  "Claude·Codex 관제에서는 세션 조회·전달만 할 수 있어요": "Claude and Codex Control can only inspect sessions and relay messages.",
+  "이 에이전트는 기존 권한 설정으로 실행돼요. 필요한 승인은 Orca에서 확인하세요": "This agent uses your existing permissions. Review any approval requests in Orca.",
   "관제에 넣었습니다": "Added to Control",
   "위": "Up",
   "아래": "Down",

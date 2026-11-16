@@ -1,4 +1,5 @@
-import { assert, test } from 'orca/testing'
+import { strict as assert } from 'node:assert'
+import { test } from 'node:test'
 import { relayTool } from './relay'
 import type { Snapshot } from './model'
 
@@ -50,4 +51,28 @@ test('전송 오류는 자동 재시도하지 않는다', async () => {
   let sends = 0
   await assert.rejects(() => relayTool({ snapshot: async () => snap(), cli: async () => { sends++; throw new Error('timeout') } }, 'pod_send_session', { key: 'claude-key', text: '전달' }))
   assert.equal(sends, 1)
+})
+
+test('입력에 명령·파일 경로를 섞거나 터미널 핸들을 변조해도 실행하지 않는다', async () => {
+  let calls = 0
+  const deps = { snapshot: async () => snap(), cli: async () => { calls++; return {} } }
+  for (const input of [null, [], { key: 'claude-key', text: 'Review', command: 'blocked' }, { key: 'claude-key', text: '' }, { key: 'claude-key', text: 'x'.repeat(20_001) }]) {
+    await assert.rejects(() => relayTool(deps, 'pod_send_session', input))
+  }
+  await assert.rejects(() => relayTool(deps, 'pod_sessions', { path: '/private' }))
+  const invalid = snap()
+  invalid.workspaces.w.agents[0].terminal = '--all'
+  await assert.rejects(() => relayTool({ ...deps, snapshot: async () => invalid }, 'pod_send_session', { key: 'claude-key', text: 'Review' }))
+  assert.equal(calls, 0)
+})
+
+test('조회 대기 중 관제가 중단되면 뒤늦게 전송하지 않는다', async () => {
+  let resolve!: (value: Snapshot) => void
+  let active = true
+  let calls = 0
+  const pending = relayTool({ active: () => active, snapshot: () => new Promise(done => { resolve = done }), cli: async () => { calls++; return {} } }, 'pod_send_session', { key: 'claude-key', text: 'Review' })
+  active = false
+  resolve(snap())
+  await assert.rejects(() => pending)
+  assert.equal(calls, 0)
 })

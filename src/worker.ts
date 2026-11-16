@@ -10,6 +10,7 @@ import { readConversation, readSession } from './conversation'
 import { CONTROL_DIR, controlArgs, writeControlFiles, writeControlMap } from './control'
 import { ControlRuntime, type ControlImage, type ControlView } from './runtime'
 import { CodexControlRuntime } from './codex-runtime'
+import { createControlBridge, type ControlBridge } from './control-bridge'
 import { TerminalControlRuntime, terminalControlPrompt, controlLaunchResult, controlScreenLines } from './terminal-control'
 import { CONTROL_AGENTS, controlAgentLabel } from './control-agents'
 import { controlHandoff, mergeControlHistory, visibleControlItem } from './control-handoff'
@@ -98,9 +99,12 @@ function killStaleControl(pid: number): Promise<string> {
 
 /** 워커가 내려갈 때 관제 프로세스도 내린다. */
 let controlRuntime: ControlEngine | null = null
+let controlBridge: ControlBridge | null = null
 export function deactivate(): void {
   void Promise.resolve(controlRuntime?.shutdown()).catch(() => {})
   controlRuntime = null
+  void controlBridge?.close()
+  controlBridge = null
 }
 
 /**
@@ -122,20 +126,6 @@ export function pickControlHome(snap: Snapshot): string | null {
 const worktreeSelector = (id: string) => `id:${id}`
 
 const TOPICS_KEY = 'topics'
-
-/** 터미널에 그대로 쓸 키. 화면 미러 아래의 키 버튼이 쓴다. */
-const KEYS: Record<string, string> = {
-  enter: '\r',
-  esc: '\x1b',
-  up: '\x1b[A',
-  down: '\x1b[B',
-  tab: '\t',
-  '1': '1',
-  '2': '2',
-  '3': '3',
-  y: 'y',
-  n: 'n'
-}
 
 function claudeCli(): string {
   const candidates = [process.env.POD_CLAUDE_CLI, join(homedir(), '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']
@@ -163,7 +153,7 @@ export function cleanTopics(input: unknown): Topic[] {
   for (const raw of input.slice(0, 40)) {
     const name = typeof raw?.name === 'string' ? raw.name.trim().slice(0, 40) : ''
     if (!name) continue
-    const keywords = (Array.isArray(raw.keywords) ? raw.keywords : [])
+    const keywords: string[] = (Array.isArray(raw.keywords) ? raw.keywords : [])
       .filter((k: unknown): k is string => typeof k === 'string')
       .map((k: string) => k.trim().slice(0, 40))
       .filter((k: string) => k.length > 0)
@@ -406,13 +396,20 @@ export default function activate(orca: any): void {
     }
     const snap = await snapshot()
     const home = saved?.home && snap.workspaces[saved.home] ? saved.home : pickControlHome(snap) ?? Object.values(snap.workspaces).sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0]?.id ?? null
-    const cwd = selected === 'codex' ? CONTROL_DIR : saved?.cwd && existsSync(saved.cwd) ? saved.cwd : home ? snap.workspaces[home].path : homedir()
+    const cwd = selected === 'codex' || selected === 'claude' ? CONTROL_DIR : saved?.cwd && existsSync(saved.cwd) ? saved.cwd : home ? snap.workspaces[home].path : homedir()
     const session = saved?.cwd === cwd ? saved.sessionId ?? null : null
     let sessionId = session
     let pid: number | null = null
     let ownedTerminal: string | null = saved?.terminal ?? null
     controlSelf = selected !== 'claude' && selected !== 'codex' ? ownedTerminal : null
     let history = Array.isArray(saved?.items) ? saved.items.slice(-240) : []
+    // The restricted adapters use a private cwd, never a user's repository configuration.
+    // Preserve old visible context without resuming a process with its old tool configuration.
+    if (saved?.cwd && saved.cwd !== cwd && (selected === 'claude' || selected === 'codex')) {
+      sharedHistory = mergeControlHistory(sharedHistory, history)
+      pendingHandoff = controlHandoff(sharedHistory)
+      await orca.storage.set(CONTROL_HANDOFF_KEY, { items: sharedHistory, to: selected, pending: true })
+    }
     let saving = Promise.resolve()
     const save = () => {
       const value = { sessionId, cwd, pid, terminal: ownedTerminal, home, items: history }
@@ -425,8 +422,20 @@ export default function activate(orca: any): void {
       orca.panels.post('pod.control.view', withProvider(view, selected))
     }
     const saveSession = (id: string | null) => { sessionId = id; save() }
-    await writeControlFiles(CONTROL_DIR, snap, null)
     let rt: ControlEngine
+    let relayEnabled = selected !== 'claude'
+    const epoch = controlEpoch
+    const assertCurrent = () => { if (controlEpoch !== epoch || provider !== selected || controlRuntime !== rt) throw new Error('Control is no longer active') }
+    const callRelay = (name: string, input: unknown, active: () => boolean = () => true) => relayTool({
+      active: () => relayEnabled && active() && rt.view().busy && controlEpoch === epoch && provider === selected && controlRuntime === rt,
+      snapshot: async () => { assertCurrent(); const value = await snapshot(0); assertCurrent(); return value },
+      cli: args => { assertCurrent(); return runCli(args) }
+    }, name, input)
+    await controlBridge?.close()
+    controlBridge = null
+    if (selected === 'claude') controlBridge = await createControlBridge(callRelay)
+    try { await writeControlFiles(CONTROL_DIR, snap, null, controlBridge?.config) }
+    catch (error) { await controlBridge?.close(); controlBridge = null; throw error }
     if (selected === 'codex') {
       rt = new CodexControlRuntime({
         spawn: () => {
@@ -436,17 +445,20 @@ export default function activate(orca: any): void {
           return child
         },
         emit, saveSession,
-        tool: (name, input) => relayTool({ snapshot: () => snapshot(0), cli: args => runCli(args) }, name, input)
+        tool: callRelay
       }, session, history)
     } else if (selected === 'claude') {
+      const bridge = controlBridge!
       rt = new ControlRuntime({
         spawn: extra => {
+          bridge.revokeSessions()
+          relayEnabled = true
           const child = spawn(claudeCli(), [...controlArgs(CONTROL_DIR), ...extra], { cwd, stdio: ['pipe', 'pipe', 'pipe'], env })
           pid = child.pid ?? null
           save()
           return child
         },
-        emit, saveSession, history: async id => (await readSession(id, cwd)).items.map(visibleControlItem)
+        emit, saveSession, onStop: () => { relayEnabled = false; bridge.revokeSessions() }, history: async id => (await readSession(id, cwd)).items.map(visibleControlItem)
       }, session)
     } else {
       const owner = () => { if (!home) throw new CliError('관제를 실행할 워크스페이스가 없습니다'); return home }
@@ -525,6 +537,8 @@ export default function activate(orca: any): void {
         await orca.storage.set(CONTROL_HANDOFF_KEY, { items: nextHistory, to: input.provider, pending: true })
         await orca.storage.set(CONTROL_PROVIDER_KEY, input.provider)
         controlEpoch++
+        await controlBridge?.close()
+        controlBridge = null
         await rt.shutdown()
         runtime = null
         controlRuntime = null
@@ -627,25 +641,9 @@ export default function activate(orca: any): void {
     return { opened: true }
   })
 
-  orca.panels.handle('pod.send', async (input: { terminal: string; text: string }) => {
-    const terminal = text(input?.terminal, 'terminal', 200)
-    const body = text(input?.text, '메시지')
-    // 「-」로 시작하는 지시도 옵션으로 읽히지 않게 --옵션=값 형태로 넘긴다.
-    await runCli(['terminal', 'send', '--terminal', terminal, `--text=${body}`, '--enter'])
-    return afterChange({ sent: true })
-  })
-
   orca.panels.handle('pod.interrupt', async (input: { terminal: string }) => {
     const terminal = text(input?.terminal, 'terminal', 200)
     await runCli(['terminal', 'send', '--terminal', terminal, '--interrupt'])
-    return afterChange({ sent: true })
-  })
-
-  orca.panels.handle('pod.key', async (input: { terminal: string; key: string }) => {
-    const terminal = text(input?.terminal, 'terminal', 200)
-    const bytes = KEYS[String(input?.key)]
-    if (!bytes) throw new CliError('모르는 키입니다')
-    await runCli(['terminal', 'send', '--terminal', terminal, `--text=${bytes}`])
     return afterChange({ sent: true })
   })
 
@@ -770,12 +768,16 @@ export default function activate(orca: any): void {
           'json',
           '--model',
           'sonnet',
-          '--tools',
-          '',
+          '--tools=',
           '--no-session-persistence',
           '--strict-mcp-config',
-          '--setting-sources',
-          'project',
+          '--mcp-config',
+          '{"mcpServers":{}}',
+          '--restricted',
+          '--permission-mode',
+          'dontAsk',
+          '--disable-slash-commands',
+          '--setting-sources=',
           '--json-schema',
           SUGGEST_SCHEMA,
           prompt

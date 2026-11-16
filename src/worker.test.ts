@@ -8,7 +8,7 @@ test('빈 메시지는 보내지 않는다', async () => {
   const worker = await mountWorker(main, { host: mockHost({}) })
   let failed = false
   try {
-    await worker.request('pod.send', { terminal: 'term_a', text: '' })
+    await worker.request('pod.control.send', { text: '' })
   } catch {
     failed = true
   }
@@ -20,7 +20,7 @@ test('터미널 핸들이 없으면 중단 신호를 보내지 않는다', async
   const worker = await mountWorker(main, { host: mockHost({}) })
   let failed = false
   try {
-    await worker.request('pod.interrupt', {})
+    await worker.request('pod.interrupt', { terminal: '' })
   } catch {
     failed = true
   }
@@ -37,18 +37,6 @@ test('주제 정리: 빈 이름은 버리고 같은 이름은 다른 id 를 준�
   assert.equal(out.length, 2)
   assert.deepEqual(out[0].keywords, ['결제'])
   assert.notEqual(out[0].id, out[1].id)
-})
-
-test('모르는 키는 보내지 않는다', async () => {
-  const worker = await mountWorker(main, { host: mockHost({}) })
-  let failed = false
-  try {
-    await worker.request('pod.key', { terminal: 'term_a', key: 'rm -rf' })
-  } catch {
-    failed = true
-  }
-  assert.equal(failed, true)
-  await worker.deactivate()
 })
 
 test('하위 섹션: 상위 id 는 남기고, 없는 상위·순환은 끊는다', () => {

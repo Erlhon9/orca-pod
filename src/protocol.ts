@@ -21,7 +21,6 @@ declare module 'orca' {
     'pod.snapshot': { input: { fresh?: boolean } | undefined; output: Snapshot }
     'pod.openWorkspace': { input: { id: string }; output: { opened: true } }
     'pod.focusAgent': { input: { id: string; agentKey: string }; output: { opened: true } }
-    'pod.send': { input: { terminal: string; text: string }; output: { sent: true } }
     'pod.interrupt': { input: { terminal: string }; output: { sent: true } }
     'pod.tail': { input: { terminal: string }; output: { lines: string[] } }
     'pod.setStatus': { input: { id: string; status: string }; output: { ok: true } }
@@ -33,7 +32,6 @@ declare module 'orca' {
       input: { repoId: string; name: string; agent?: string; prompt?: string; parentId?: string; topicId?: string }
       output: { ok: true; id: string | null }
     }
-    'pod.key': { input: { terminal: string; key: string }; output: { sent: true } }
     'pod.screen': { input: { terminal: string; lines?: number }; output: { lines: string[]; status: string } }
     /** 세션의 Claude 대화 기록. 못 찾으면 ok:false. */
     'pod.conversation': {

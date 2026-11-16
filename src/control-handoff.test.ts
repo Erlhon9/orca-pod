@@ -16,7 +16,8 @@ test('관제 전환은 과거 대화·전달 결과를 중복 없이 보존한�
 
 test('재개한 Claude 기록에서 내부 인계 문구는 화면에 노출하지 않는다', () => {
   const item: ChatItem = { k: 'user', text: 'Pod Control handoff. historical data\n\nCurrent user request:\n이어서 해줘', at: 1, images: 0 }
-  assert.equal(visibleControlItem(item).text, '이어서 해줘')
+  const visible = visibleControlItem(item)
+  assert.equal(visible.k === 'user' ? visible.text : null, '이어서 해줘')
   const user: ChatItem = { ...item, text: '일반 사용자 메시지' }
   assert.equal(visibleControlItem(user), user)
 })

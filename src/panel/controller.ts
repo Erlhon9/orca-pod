@@ -323,8 +323,8 @@ export function createController(api: ControllerApi) {
         'ul',
         null,
         h('li', null, t('에이전트 터미널 세션 — 입력창에 지시를 전달해요')),
-        h('li', null, (view.provider ?? 'claude') === 'claude' ? t('Claude 대화창 — Claude 관제에서 쪽지로 전달해요. Codex 대화창에는 보낼 수 없어요') : view.provider === 'codex' ? t('대화창 — 최근 요청·답변을 조회할 수 있지만 Codex 관제에서 전달은 지원하지 않아요') : t('이 에이전트는 Orca 터미널에서 실행돼요. 로그인·승인은 Orca에서 처리하세요')),
-        h('li', null, t('셸 터미널에는 보내지 않아요. 관제는 코드를 고치지 않고 orca 조회·보내기만 해요'))
+        h('li', null, !view.provider || view.provider === 'claude' || view.provider === 'codex' ? t('대화창 — 최근 요청·답변만 조회해요. 직접 대화하려면 Orca에서 여세요.') : t('이 에이전트는 Orca 터미널에서 실행돼요. 로그인·승인은 Orca에서 처리하세요')),
+        h('li', null, !view.provider || view.provider === 'claude' || view.provider === 'codex' ? t('Claude·Codex 관제에서는 세션 조회·전달만 할 수 있어요') : t('이 에이전트는 기존 권한 설정으로 실행돼요. 필요한 승인은 Orca에서 확인하세요'))
       )
     )
   }

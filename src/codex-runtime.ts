@@ -8,7 +8,7 @@ export interface CodexDeps {
   spawn(): ChildProcess
   emit(view: ControlView): void
   saveSession(id: string | null): void
-  tool(name: string, input: unknown): Promise<unknown>
+  tool(name: string, input: unknown, active?: () => boolean): Promise<unknown>
   now?(): number
 }
 
@@ -83,7 +83,7 @@ export class CodexControlRuntime {
     p.on('exit', exited)
     p.on('error', exited)
     p.stdin?.on('error', exited)
-    await this.request('initialize', { clientInfo: { name: 'pod_control', version: '0.2.2' }, capabilities: { experimentalApi: true } })
+    await this.request('initialize', { clientInfo: { name: 'pod_control', version: '0.4.0' }, capabilities: { experimentalApi: true } })
     this.write({ method: 'initialized' })
     // mcp_servers={}는 사용자 테이블을 지우지 않는다. 이름을 조회해 각각 명시적으로 끈다.
     const loaded = await this.request('config/read', { includeLayers: false })
@@ -181,7 +181,7 @@ export class CodexControlRuntime {
           const generation = this.generation
           Promise.resolve().then(() => {
             if (generation !== this.generation || from !== this.proc) throw new Error('중단함')
-            return this.deps.tool(v.tool, v.arguments)
+            return this.deps.tool(v.tool, v.arguments, () => generation === this.generation && from === this.proc && this.busy)
           }).then(
             result => this.toolResult(o.id, result, true, from),
             e => this.toolResult(o.id, String(e?.message ?? e), false, from)
