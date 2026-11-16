@@ -1,6 +1,8 @@
 // 영어 사전. 키는 한국어 원문(i18n.ts 의 t() 에 넘기는 문구와 정확히 같아야 한다), 값은 영어. `{이름}` 자리표시자는 그대로 둔다.
 // 워커가 보내는 오류·메모 문구(worker.ts·runtime.ts·transcript.ts·model.ts)도 패널이 표시할 때 번역하므로 여기에 둔다.
 export const EN: Record<string, string> = {
+  "자동 배치": "Auto layout",
+  "카드 위치를 자동 배치로 되돌리기": "Restore automatic card positions",
   "Orca에서 답변하기": "Answer in Orca",
   "Orca에서 승인하기": "Review approval in Orca",
   "질문": "Question",

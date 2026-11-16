@@ -2,6 +2,7 @@
 // 카드 안에 제목·요약·세션이 들어가 있어 호버하지 않아도 읽힌다. 갱신 때 기존 좌표를 이어 받아 튀지 않게 한다.
 import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
+import type { GraphPoint } from '../graph-layout'
 import { topicRoot } from '../model'
 import { openMenu } from './overlays'
 import { burstAt, celebrate, floatAt, pop, shake } from './fx'
@@ -17,6 +18,7 @@ interface GNode {
   y: number
   vx: number
   vy: number
+  fixed?: boolean
   /** 디렉토리끼리 떨어뜨릴 때 쓰는 반지름(섹션까지 포함). */
   extent?: number
   label: string
@@ -67,6 +69,9 @@ export interface GraphHooks {
   sectionState(key: string): 'open' | 'closed' | 'all' | undefined
   setSectionState(keys: string[], v: 'open' | 'closed' | 'all' | null): void
   scopeRepo(): string | null
+  position(id: string): GraphPoint | undefined
+  setPosition(id: string, point: GraphPoint | null): void
+  resetPositions(): void
   /** 섹션 추가. parentId 를 주면 그 아래 하위 섹션. */
   addSection(repoId: string, parentId?: string): void
   addSession(repoId: string, topicId: string | null, anchor: Element): void
@@ -169,6 +174,7 @@ function simulate(nodes: GNode[], edges: GEdge[], ticks: number): void {
       e.b.vy -= dy * k
     }
     for (const p of nodes) {
+      if (p.fixed) { p.vx = p.vy = 0; continue }
       // 카드는 자기 섹션 쪽으로, 섹션은 디렉토리 쪽으로 당겨 묶음이 흩어지지 않게 한다.
       const home = p.kind === 'repo' ? { x: 0, y: 0 } : (p.anchor ?? homes.get(p.repoId) ?? { x: 0, y: 0 })
       const pull = p.kind === 'repo' ? 0.009 : p.kind === 'hub' ? (p.off ? 0.006 : 0.03) : 0.06
@@ -217,7 +223,7 @@ function collide(nodes: GNode[], amount: number): boolean {
       const oy = a.hh + b.hh + gap - Math.abs(dy)
       if (ox <= 0 || oy <= 0) continue
       any = true
-      const still = (n: GNode) => n.kind === 'repo' || (n.kind === 'hub' && !!n.off)
+      const still = (n: GNode) => !!n.fixed || n.kind === 'repo' || (n.kind === 'hub' && !!n.off)
       if (still(a) && still(b)) continue
       const wa = still(a) ? 0 : still(b) ? 1 : 0.5
       const wb = 1 - wa
@@ -393,6 +399,17 @@ export function createGraph(hooks: GraphHooks) {
     )
   )
   const groupSeg = h('div', { class: 'seg sm' })
+  const resetPositionsBtn = h('button', { class: 'pill-btn', title: t('카드 위치를 자동 배치로 되돌리기'), onClick: () => {
+    hooks.resetPositions()
+    positions.clear()
+    relayout = true
+    lastKey = ''
+    if (current) {
+      self.update(current.snap, visibleRef)
+      userMoved = false
+      fit(true)
+    }
+  } }, icon('refresh'), t('자동 배치'))
   const foldBtn = h('button', { class: 'pill-btn', title: t('주제 모두 접기·펼치기') })
   foldBtn.addEventListener('click', () => {
     const anyOpen = nodeEls.some((x) => x.n.kind === 'hub' && !x.n.collapsed)
@@ -420,8 +437,9 @@ export function createGraph(hooks: GraphHooks) {
     chips.forEach((c, i) => window.setTimeout(() => burstAt(c, 'var(--muted)', 6, 0.5), i * 25))
     void hooks.closeTabs(handles)
   })
-  const bar = h('div', { class: 'g-bar' }, groupSeg, foldBtn, sweepBtn)
+  const bar = h('div', { class: 'g-bar' }, groupSeg, foldBtn, resetPositionsBtn, sweepBtn)
   function renderBar(): void {
+    resetPositionsBtn.hidden = !nodeEls.some(({ n }) => n.fixed)
     const mode = hooks.groupBy()
     groupSeg.replaceChildren(
       ...(
@@ -470,6 +488,8 @@ export function createGraph(hooks: GraphHooks) {
         n.x = prev.x
         n.y = prev.y
       }
+      const fixed = n.kind === 'ws' && n.wsId ? hooks.position(n.wsId) : undefined
+      if (fixed) { n.x = fixed.x; n.y = fixed.y; n.fixed = true }
       nodes.push(n)
       byId.set(n.id, n)
       return n
@@ -926,9 +946,9 @@ export function createGraph(hooks: GraphHooks) {
     renderBar()
   }
 
-  /** 카드를 끌어 다른 섹션에 놓는다. 놓을 곳이 없으면 제자리로 튕겨 돌아간다. */
+  /** 빈 곳에 놓으면 위치를 보관하고, 섹션 위에 직접 놓으면 소속을 바꾼다. */
   function startDrag(ev: PointerEvent, n: GNode, w: WorkspaceView, g: SVGElement): void {
-    if (ev.button !== 0 || (ev.target as Element).closest('.gc-add') || !current) return
+    if (ev.button !== 0 || (ev.target as Element).closest('button, .gc-add') || !current) return
     const sx = ev.clientX
     const sy = ev.clientY
     const origin = { ...(shown.get(n.id) ?? { x: n.x, y: n.y }) }
@@ -937,7 +957,7 @@ export function createGraph(hooks: GraphHooks) {
     const line = s('path', { class: 'g-drag-line' })
     let active = false
     let target: (typeof hubs)[number] | null = null
-    // 최근 움직임으로 속도를 재서 카드를 기울이고, 던지면 그 방향 섹션으로 보낸다.
+    // 최근 움직임으로 카드를 기울인다. 소속 변경은 실제 놓은 섹션에만 적용한다.
     const trail: { x: number; y: number; t: number }[] = []
     let tilt = 0
     const cardEl = g.querySelector('.gc') as HTMLElement | null
@@ -975,8 +995,9 @@ export function createGraph(hooks: GraphHooks) {
       cardEl?.style.setProperty('--tilt', `${tilt.toFixed(2)}deg`)
       const pt = toGraph(e.clientX, e.clientY)
       let best: (typeof hubs)[number] | null = null
-      let bd = 90
+      let bd = Infinity
       for (const hb of hubs) {
+        if (Math.abs(pt.x - hb.n.x) > hb.n.hw * lod || Math.abs(pt.y - hb.n.y) > hb.n.hh * lod) continue
         const d = Math.hypot(Math.max(0, Math.abs(pt.x - hb.n.x) - hb.n.hw), Math.max(0, Math.abs(pt.y - hb.n.y) - hb.n.hh))
         if (d < bd) {
           bd = d
@@ -995,7 +1016,7 @@ export function createGraph(hooks: GraphHooks) {
       if (target && target.n !== home) line.setAttribute('d', curve({ x, y }, target.n))
       else line.removeAttribute('d')
     }
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', up)
@@ -1007,37 +1028,23 @@ export function createGraph(hooks: GraphHooks) {
       wrap.classList.remove('moving')
       g.classList.remove('lifted')
       cardEl?.style.removeProperty('--tilt')
-      // 던졌으면: 속도 방향으로 조금 앞을 내다보고 그 근처 섹션을 고른다.
-      if ((!target || target.n === home) && trail.length > 1) {
-        const last = trail[trail.length - 1]
-        const dt = Math.max(8, last.t - trail[0].t)
-        const vx = (last.x - trail[0].x) / dt
-        const vy = (last.y - trail[0].y) / dt
-        if (Math.hypot(vx, vy) > 0.9) {
-          const at0 = shown.get(n.id) ?? origin
-          const ahead = { x: at0.x + (vx * 260) / scale, y: at0.y + (vy * 260) / scale }
-          let best: (typeof hubs)[number] | null = null
-          let bd = 170
-          for (const hb of hubs) {
-            if (hb.n === home) continue
-            const d = Math.hypot(ahead.x - hb.n.x, ahead.y - hb.n.y)
-            if (d < bd) {
-              bd = d
-              best = hb
-            }
-          }
-          if (best) target = best
-        }
-      }
       for (const hb of hubs) hb.g.classList.remove('home', 'drop')
       dragging = null
       const at = shown.get(n.id) ?? origin
       const to = target && target.n !== home ? target.n : null
       const later = pendingUpdate
       pendingUpdate = null
-      if (!to || !current) {
+      if (ev.type === 'pointercancel' || !current) {
         springBack(n, g, at, origin)
         if (later) window.setTimeout(() => self.update(later.snap, later.visible), 480)
+        return
+      }
+      if (!to) {
+        n.x = at.x; n.y = at.y; n.vx = n.vy = 0; n.fixed = true
+        positions.set(n.id, { ...at })
+        hooks.setPosition(w.id, { ...at })
+        lastKey = ''
+        self.update(later?.snap ?? current.snap, later?.visible ?? visibleRef)
         return
       }
       const pill = target!.g.querySelector('.gh') as HTMLElement | null
@@ -1046,6 +1053,8 @@ export function createGraph(hooks: GraphHooks) {
       floatAt(pill, '+1', to.color)
       // 바로 새 섹션으로 옮겨 그리고(낙관적), 저장은 뒤에서 한다. 실패하면 다음 갱신 때 제자리로 돌아간다.
       const sec = to.section ?? '_'
+      const previousPosition = hooks.position(w.id)
+      hooks.setPosition(w.id, null)
       const base = later?.snap ?? current.snap
       if (later) visibleRef = later.visible
       const live = base.workspaces[w.id] ?? current.snap.workspaces[w.id]
@@ -1057,6 +1066,7 @@ export function createGraph(hooks: GraphHooks) {
       lastKey = ''
       self.update(base, visibleRef)
       void hooks.moveToSection(w, byTopic ? { topicId: sec, label: to.label } : { status: sec, label: to.label }).catch(() => {
+        if (previousPosition) hooks.setPosition(w.id, previousPosition)
         lastKey = ''
       })
     }

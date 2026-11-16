@@ -2,6 +2,7 @@
 import { currentLang, langPersisted, langPref, normalizePref, setLangPref, t, tt, type LangPref } from './i18n'
 import type { AgentView, RepoView, Snapshot, TerminalRef, Topic, WorkspaceView } from '../model'
 import { topicPath, topicRoot } from '../model'
+import { clearGraphPositions, graphPositionKey, readGraphPositions, type GraphPositions } from '../graph-layout'
 import { createController, type ControlView } from './controller'
 import { createDetail } from './detail'
 import { pendingQuestions, readQuestions } from '../questions'
@@ -47,6 +48,7 @@ const state = {
   closedGroups: new Set<string>(),
   /** 그래프 섹션 접기 상태(키: 디렉토리:묶음방식:섹션). 없으면 자동. */
   graphSections: {} as Record<string, 'open' | 'closed' | 'all'>,
+  graphPositions: {} as GraphPositions,
   /** 고른 디렉토리. null 은 전체, undefined 는 아직 고르지 않음(첫 스냅샷에서 가장 바쁜 곳). */
   repo: undefined as string | null | undefined,
   error: null as string | null,
@@ -1682,6 +1684,17 @@ const graph = createGraph({
     renderBody()
   },
   scopeRepo: () => state.repo ?? null,
+  position: (id) => state.graphPositions[graphPositionKey(state.groupBy, state.repo ?? null, id)],
+  setPosition: (id, point) => {
+    const key = graphPositionKey(state.groupBy, state.repo ?? null, id)
+    if (point) state.graphPositions[key] = point
+    else delete state.graphPositions[key]
+    void savePrefs()
+  },
+  resetPositions: () => {
+    state.graphPositions = clearGraphPositions(state.graphPositions, state.groupBy, state.repo ?? null)
+    void savePrefs()
+  },
   addSection: (repoId, parentId) => {
     const repo = state.snap?.repos.find((r) => r.id === repoId)
     if (repo) addSection(repo, parentId)
@@ -1772,7 +1785,8 @@ function savePrefs(): Promise<void> {
     closedGroups: [...state.closedGroups],
     repo: state.repo ?? null,
     groupBy: state.groupBy,
-    graphSections: state.graphSections
+    graphSections: state.graphSections,
+    graphPositions: state.graphPositions
   }
   return Promise.resolve(orca.storage?.set?.(PREFS_KEY, prefs)).then(() => undefined, () => undefined)
 }
@@ -1796,6 +1810,7 @@ async function loadPrefs(): Promise<void> {
     state.closedGroups = new Set(Array.isArray(p.closedGroups) ? p.closedGroups : [])
     if (typeof p.repo === 'string' || p.repo === null) state.repo = p.repo
     if (p.groupBy === 'topic' || p.groupBy === 'status') state.groupBy = p.groupBy
+    state.graphPositions = readGraphPositions(p.graphPositions)
     if (p.graphSections && typeof p.graphSections === 'object') {
       for (const [k, v] of Object.entries(p.graphSections)) if (v === 'open' || v === 'closed' || v === 'all') state.graphSections[k] = v
     }

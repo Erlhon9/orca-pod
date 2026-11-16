@@ -3867,6 +3867,9 @@ html.light .md-code {
   touch-action: none;
 }
 
+.g-ws .gc-head { cursor: grab; }
+.graph-wrap.moving .gc-head { cursor: grabbing; }
+
 .graph-wrap.moving {
   cursor: grabbing;
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.5
+
+- Keep workspace cards where you drop them in the graph, including after background updates and reopening the panel. Remember positions separately for each repository view and topic/status grouping.
+- Add Auto layout to restore automatic placement. Moving a card to another group now requires dropping directly on its label; dropping into free space only changes its position.
+
 ## 0.4.4
 
 - Add an Answer in Orca button to pending questions in session details and hover previews, including unstructured prompts. Route approval prompts to Orca for review. Terminal sessions open their exact terminal; native chat sessions open their workspace with the currently available public API.
