@@ -3,13 +3,13 @@
 import { t, tt } from './i18n'
 import { CONTROL_AGENTS, type ControlProvider, type ControlAgentOption } from '../control-agents'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
-import { topicPath } from '../model'
 import type { ChatItem } from '../transcript'
 import { attachments } from './attach'
+import { addTarget, controlMessage, ControlMessageTooLongError, MissingControlTargetError, resolveTarget, targetKey, type ControlTarget } from './control-targets'
 import { renderChat } from './chat'
 import { fly, shake } from './fx'
 import { closeMenu, openMenu, type MenuItem } from './overlays'
-import { clip, duration, fill, h, icon } from './ui'
+import { avatar, clip, duration, fill, h, icon } from './ui'
 
 export interface ControllerApi {
   snap(): Snapshot | null
@@ -28,16 +28,6 @@ export interface ControlView {
   sessionId: string | null
   error: string | null
   rev?: number
-}
-
-/** 관제 입력창에 넣는 세션·워크스페이스 참조. 관제는 지도(map.json)에서 이 이름·핸들로 찾는다. */
-export function refOf(snap: Snapshot | null, w: WorkspaceView, a?: AgentView): string {
-  const repo = snap?.repos.find((r) => r.id === w.repoId)
-  const topic = repo && w.topic ? topicPath(repo.topics, w.topic) : ''
-  const where = [repo?.name, topic, w.name].filter(Boolean).join(' › ')
-  if (!a) return t(`[워크스페이스 {where}]`, { where })
-  const how = a.terminal ? t(`터미널 {terminal}`, { terminal: a.terminal }) : t('대화창')
-  return t(`[세션 {where} / {title} · {how} · ID {key}]`, { where, title: a.title, how, key: a.key })
 }
 
 const OPEN_KEY = 'pod.dock.open'
@@ -59,11 +49,35 @@ export function createController(api: ControllerApi) {
   const area = h('textarea', { rows: 1, placeholder: t('관제에게 (Enter 보내기 · Shift+Enter 줄바꿈)') }) as HTMLTextAreaElement
   const send = h('button', { class: 'send', title: t('보내기 (Enter)'), disabled: true }, icon('send')) as HTMLButtonElement
   const composer = h('div', { class: 'composer stack dk-composer' })
+  const targetTray = h('div', { class: 'dk-targets', hidden: true, 'aria-label': t('선택한 대상') })
+  let targets: ControlTarget[] = []
   let sending = false
   let changingProvider = false
-  const syncSend = () => (send.disabled = sending || changingProvider || view.busy || (!area.value.trim() && pics.count() === 0))
+  const syncSend = () => {
+    send.disabled = sending || changingProvider || view.busy || (!area.value.trim() && pics.count() === 0)
+    targetTray.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = sending)
+  }
+  function renderTargets(): void {
+    targetTray.hidden = targets.length === 0
+    targetTray.replaceChildren(...targets.map(target => {
+      const resolved = resolveTarget(api.snap(), target)
+      const w = resolved?.workspace
+      const a = resolved?.agent
+      const name = w?.name ?? t('세션')
+      const label = a ? `${name} · ${a.title}` : name
+      return h('div', { class: 'dk-target', 'data-target-key': targetKey(target), title: [w?.repo, name, a?.title].filter(Boolean).join(' › ') },
+        a ? avatar(a, 'sm') : icon('folder'),
+        h('span', { class: 'dk-target-label' }, label),
+        h('button', { type: 'button', class: 'dk-target-remove', title: t('대상 빼기'), 'aria-label': t('{name} 빼기', { name: label }), disabled: sending, onClick: () => {
+          if (sending) return
+          targets = targets.filter(item => targetKey(item) !== targetKey(target))
+          renderTargets()
+          area.focus()
+        } }, icon('x')))
+    }))
+  }
   const pics = attachments(composer, area, { call: (n, i, q) => api.call(n, i, q), toast: (m, k) => api.toast(m, k), onChange: syncSend })
-  composer.append(pics.tray, h('div', { class: 'composer-row' }, pics.button, area, send))
+  composer.append(targetTray, pics.tray, h('div', { class: 'composer-row' }, pics.button, area, send))
   el.append(head, previewEl, chatBox, composer)
   previewEl.addEventListener('click', () => setOpen(true))
 
@@ -86,13 +100,18 @@ export function createController(api: ControllerApi) {
     pics.lock(true)
     try {
       const said = area.value.trim() || t(`사진 {n}장`, { n: pics.count() })
+      const text = controlMessage(api.snap(), targets, area.value)
       const images = await pics.images()
-      await api.call('pod.control.send', { text: area.value, images })
+      await api.call('pod.control.send', { text, images })
       fly(area.getBoundingClientRect(), head.getBoundingClientRect(), said)
       area.value = ''
       pics.clear()
+      targets = []
+      renderTargets()
       stick = true
-    } catch {
+    } catch (error) {
+      if (error instanceof MissingControlTargetError) api.toast(t('선택한 대상을 찾을 수 없어요. 다시 선택해 주세요.'), 'err')
+      if (error instanceof ControlMessageTooLongError) api.toast(t('내용이 너무 길어요. 대상이나 메시지를 줄여 주세요.'), 'err')
     } finally {
       sending = false
       area.readOnly = false
@@ -283,7 +302,7 @@ export function createController(api: ControllerApi) {
       h(
         'ol',
         null,
-        h('li', null, t('그래프 카드의 세션 줄에 올리거나 세션 목록을 열고 '), h('span', { class: 'dk-key' }, '✦'), t(' 버튼을 누르면 그 세션이 입력창에 들어가요.')),
+        h('li', null, t('그래프 카드의 세션 줄에 올리거나 세션 목록을 열고 '), h('span', { class: 'dk-key' }, '✦'), t(' 버튼을 누르면 대상 칩이 추가돼요.')),
         h('li', null, t('할 말을 이어 쓰고 '), h('span', { class: 'dk-key' }, 'Enter'), t('. 줄바꿈은 '), h('span', { class: 'dk-key' }, 'Shift+Enter'), t(', 사진은 붙여넣기·끌어놓기.')),
         h('li', null, t('이름으로 말해도 돼요. 대상이 애매하면 관제가 되물어요.'))
       ),
@@ -352,19 +371,16 @@ export function createController(api: ControllerApi) {
       if (el.classList.contains('off')) return
       area.focus()
     },
-    /** 세션·워크스페이스 참조를 입력창에 넣는다. */
+    /** 대상은 칩으로 모으고 사용자가 작성 중인 글은 그대로 둔다. */
     insert(w: WorkspaceView, a?: AgentView) {
-      const ref = refOf(api.snap(), w, a)
-      area.value = area.value.trim() ? `${area.value.trimEnd()}\n${ref} ` : `${ref} `
+      if (sending) return
+      targets = addTarget(targets, { workspaceId: w.id, sessionKey: a?.key ?? null })
+      renderTargets()
       syncSend()
-      if (el.classList.contains('off')) api.toast(t('관제에 넣었습니다'))
-      else {
-        area.focus()
-        // 넣었다는 걸 입력창이 반짝여 알린다.
-        composer.classList.remove('got-ref')
-        void composer.offsetWidth
-        composer.classList.add('got-ref')
-      }
+      area.focus()
+      composer.classList.remove('got-ref')
+      void composer.offsetWidth
+      composer.classList.add('got-ref')
       area.setSelectionRange(area.value.length, area.value.length)
     }
   }

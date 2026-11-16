@@ -1,6 +1,13 @@
 // 영어 사전. 키는 한국어 원문(i18n.ts 의 t() 에 넘기는 문구와 정확히 같아야 한다), 값은 영어. `{이름}` 자리표시자는 그대로 둔다.
 // 워커가 보내는 오류·메모 문구(worker.ts·runtime.ts·transcript.ts·model.ts)도 패널이 표시할 때 번역하므로 여기에 둔다.
 export const EN: Record<string, string> = {
+  " 버튼을 누르면 대상 칩이 추가돼요.": " to add a target chip.",
+  "선택한 대상": "Selected targets",
+  "대상 빼기": "Remove target",
+  "{name} 빼기": "Remove {name}",
+  "선택한 대상을 찾을 수 없어요. 다시 선택해 주세요.": "A selected target is no longer available. Select it again.",
+  "내용이 너무 길어요. 대상이나 메시지를 줄여 주세요.": "The message is too long. Remove some targets or shorten it.",
+  "[워크스페이스 {where} · ID {id}]": "[Workspace {where} · ID {id}]",
   "요청이 실패했습니다": "Request failed",
   "완료!": "Done!",
   "불러오지 못했습니다": "Could not load",

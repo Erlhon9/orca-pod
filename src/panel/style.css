@@ -4588,6 +4588,36 @@ body.row-dragging [data-drop].drop-over {
 }
 
 /* ---------- 관제 줄 ---------- */
+.dk-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 96px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.dk-targets[hidden] { display: none; }
+
+.dk-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(280px, 100%);
+  min-width: 0;
+  padding: 4px 5px 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--ring) 30%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--ring) 9%, var(--card));
+}
+
+.dk-target > .av, .dk-target > .i { flex: none; width: 18px; height: 18px; }
+.dk-target-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.dk-target-remove { display: grid; place-items: center; width: 20px; height: 20px; flex: none; border-radius: 5px; color: var(--muted); }
+.dk-target-remove .i { width: 12px; height: 12px; }
+.dk-target-remove:hover { color: var(--fg); background: var(--hover); }
+.dk-target-remove:disabled { opacity: 0.4; }
+
 .dock.control {
   padding-top: 6px;
 }
