@@ -3374,6 +3374,8 @@ html.light .md-code {
 .sq-options li { padding: 3px 0; }
 .sq-options li div { color: var(--muted); white-space: pre-wrap; }
 .sq-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.sq-open { margin-top: 10px; }
+.chat-prompt > .sq-open { margin: 0 12px 10px; }
 
 .chat-foot {
   display: flex;

@@ -418,14 +418,16 @@ function tailBlock(terminal: string): HTMLElement {
 function waitingQuestion(w: WorkspaceView, a: AgentView): HTMLElement {
   const box = h('div', { class: 'hc-question' })
   const known = a.tool?.name === 'AskUserQuestion' ? readQuestions(a.tool.input) : []
-  if (known.length) { box.append(questionCard(known)); return box }
+  const open = () => { hideHover(); focusAgent(w, a) }
+  if (known.length) { box.append(questionCard(known, open)); return box }
   box.append(h('div', { class: 'v' }, t('질문을 확인하는 중…')))
   void call<{ items: ChatItem[] }>('pod.conversation', { path: w.path, key: a.key, type: a.type, title: a.title, prompt: a.prompt, since: a.since, others: w.agents.filter(other => other.key !== a.key).map(other => other.key) }, true)
     .then(r => pendingQuestions(r.items ?? []))
     .catch(() => [])
-    .then(questions => box.replaceChildren(questions.length ? questionCard(questions) : h('div', null,
+    .then(questions => box.replaceChildren(questions.length ? questionCard(questions, open) : h('div', null,
       h('div', { class: 'k' }, t('답변을 기다리는 질문')),
-      a.terminal ? tailBlock(a.terminal) : h('div', { class: 'v' }, t('질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요'))
+      a.terminal ? tailBlock(a.terminal) : h('div', { class: 'v' }, t('질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요')),
+      h('button', { class: 'pill-btn primary sq-open', onClick: open }, icon('open'), t('Orca에서 답변하기'))
     )))
   return box
 }

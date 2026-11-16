@@ -355,7 +355,7 @@ export function createDetail(api: DetailApi) {
     }
     const agent = s.kind === 'agent' ? s.agent : null
     const chatOk = agent && agent.type === 'claude' && !noTranscript.has(agent.key) && modeOf(s) === 'chat'
-    const main = chatOk ? buildChat(w, agent!, handle) : handle ? buildScreen(handle) : buildChatFallback(agent!)
+    const main = chatOk ? buildChat(w, agent!, handle) : handle ? buildScreen(handle) : buildChatFallback(w, agent!)
     if (!handle) {
       // 대화창 세션: 읽기만 하고 이어서 쓰는 건 Orca 대화창에서.
       sessionBody.replaceChildren(
@@ -402,13 +402,13 @@ export function createDetail(api: DetailApi) {
     return screen
   }
 
-  const fallbackMessages = (a: AgentView) => [
+  const fallbackMessages = (w: WorkspaceView, a: AgentView) => [
     ...(a.prompt ? [h('div', { class: 'msg-me' }, h('div', { class: 'bubble-me' }, a.prompt))] : []),
     ...(a.lastMessage ? [h('div', { class: 'msg-agent' }, markdown(a.lastMessage))] : []),
-    ...(a.state === 'waiting' && a.tool?.name === 'AskUserQuestion' && readQuestions(a.tool.input).length ? [questionCard(readQuestions(a.tool.input))] : [])
+    ...(a.state === 'waiting' && a.tool?.name === 'AskUserQuestion' && readQuestions(a.tool.input).length ? [questionCard(readQuestions(a.tool.input), () => api.focusAgent(w, a))] : [])
   ]
 
-  function buildChatFallback(a: AgentView): HTMLElement {
+  function buildChatFallback(w: WorkspaceView, a: AgentView): HTMLElement {
     const inner = h('div', { class: 'convo-inner' })
     const box = h('div', { class: 'convo' }, inner)
     let sig = ''
@@ -418,7 +418,7 @@ export function createDetail(api: DetailApi) {
       sig = next
       const keep = box.scrollTop
       const bottom = !box.isConnected || box.scrollHeight - keep - box.clientHeight < 40
-      inner.replaceChildren(...fallbackMessages(cur))
+      inner.replaceChildren(...fallbackMessages(w, cur))
       box.scrollTop = bottom ? box.scrollHeight : keep
     }
     refresh(a)
@@ -470,7 +470,7 @@ export function createDetail(api: DetailApi) {
           if (next !== sig) {
             sig = next
             const keep = box.scrollTop
-            inner.replaceChildren(...fallbackMessages(cur))
+            inner.replaceChildren(...fallbackMessages(w, cur))
             box.scrollTop = stickBottom ? box.scrollHeight : keep
           }
           return
@@ -519,16 +519,18 @@ export function createDetail(api: DetailApi) {
           workingSince: cur.since,
           truncated: r.truncated,
           open: openGroups,
-          onLink: (url) => api.openUrl(url)
+          onLink: (url) => api.openUrl(url),
+          onQuestion: () => api.focusAgent(w, live())
         }),
-        ...(fallbackQuestions.length ? [questionCard(fallbackQuestions)] : []),
+        ...(fallbackQuestions.length ? [questionCard(fallbackQuestions, () => api.focusAgent(w, live()))] : []),
         ...((blocked || waiting) && !questions.length && !fallbackQuestions.length
           ? [
               h(
                 'div',
                 { class: 'chat-prompt' },
                 h('div', { class: 'cp-head' }, icon('alert'), blocked ? t('승인을 기다리고 있어요') : t('답변을 기다리는 질문')),
-                h('pre', null, prompt.filter((l) => l.trim()).join('\n') || t('질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요'))
+                h('pre', null, prompt.filter((l) => l.trim()).join('\n') || t('질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요')),
+                h('button', { class: 'pill-btn primary sq-open', onClick: () => api.focusAgent(w, live()) }, icon('open'), blocked ? t('Orca에서 승인하기') : t('Orca에서 답변하기'))
               )
             ]
           : [])

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+- Add an Answer in Orca button to pending questions in session details and hover previews, including unstructured prompts. Route approval prompts to Orca for review. Terminal sessions open their exact terminal; native chat sessions open their workspace with the currently available public API.
+
 ## 0.4.3
 
 - Limit session hover previews to 560 pixels or the visible panel height, whichever is smaller. Scroll long questions inside the preview while keeping the session heading and actions visible.

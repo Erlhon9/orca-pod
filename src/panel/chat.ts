@@ -219,6 +219,7 @@ export interface ChatRenderOptions {
   truncated: boolean
   open: Set<string>
   onLink(url: string): void
+  onQuestion?(): void
 }
 
 /** 항목을 턴 단위로 묶어 그린다. */
@@ -244,7 +245,7 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
     if (it.k === 'tool') {
       if (it.questions?.length && !it.resolved) {
         flushTools(false)
-        out.push(questionCard(it.questions))
+        out.push(questionCard(it.questions, o.onQuestion))
         turnEnd = it.at
         continue
       }
