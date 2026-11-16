@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Keep an open session conversation mounted when background metadata changes, preserving scroll position, text selection, and expanded tool groups.
+- Load conversations immediately after mounting and retain the last successful content during temporary empty reads.
+- Update changed chat reply text without resetting the session view, including changes with unchanged timestamps.
+
 ## 0.4.0
 
 - Restrict embedded Claude Control to the same three worker-validated session tools as Codex. Remove permission bypass, shell hooks, file tools, and direct Claude chat messaging.

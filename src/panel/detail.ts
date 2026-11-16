@@ -48,6 +48,7 @@ export function createDetail(api: DetailApi) {
   let sessionHead: HTMLElement | null = null
   let sessionBody: HTMLElement | null = null
   let renderedSession = ''
+  let refreshBody: ((s: Session) => void) | null = null
   let poll = 0
   let screen: HTMLPreElement | null = null
   let stickBottom = true
@@ -318,6 +319,7 @@ export function createDetail(api: DetailApi) {
 
   function renderSessionBody(w: WorkspaceView, s: Session | null): void {
     if (!sessionBody) return
+    refreshBody = null
     stopPoll()
     screen = null
     if (!s) {
@@ -398,17 +400,27 @@ export function createDetail(api: DetailApi) {
     return screen
   }
 
+  const fallbackMessages = (a: AgentView) => [
+    ...(a.prompt ? [h('div', { class: 'msg-me' }, h('div', { class: 'bubble-me' }, a.prompt))] : []),
+    ...(a.lastMessage ? [h('div', { class: 'msg-agent' }, markdown(a.lastMessage))] : [])
+  ]
+
   function buildChatFallback(a: AgentView): HTMLElement {
-    return h(
-      'div',
-      { class: 'convo' },
-      h(
-        'div',
-        { class: 'convo-inner' },
-        a.prompt ? h('div', { class: 'msg-me' }, h('div', { class: 'bubble-me' }, a.prompt)) : null,
-        a.lastMessage ? h('div', { class: 'msg-agent' }, markdown(a.lastMessage)) : null
-      )
-    )
+    const inner = h('div', { class: 'convo-inner' })
+    const box = h('div', { class: 'convo' }, inner)
+    let sig = ''
+    const refresh = (cur: AgentView) => {
+      const next = JSON.stringify([cur.prompt, cur.lastMessage])
+      if (next === sig) return
+      sig = next
+      const keep = box.scrollTop
+      const bottom = !box.isConnected || box.scrollHeight - keep - box.clientHeight < 40
+      inner.replaceChildren(...fallbackMessages(cur))
+      box.scrollTop = bottom ? box.scrollHeight : keep
+    }
+    refresh(a)
+    refreshBody = s => { if (s.kind === 'agent') refresh(s.agent) }
+    return box
   }
 
   /** 대화 보기. 기록 파일을 1.5초마다 이어 읽고, 바뀌었을 때만 다시 그린다. */
@@ -447,6 +459,19 @@ export function createDetail(api: DetailApi) {
       }
       if (!box.isConnected) return
       if (!r.ok || r.items.length === 0) {
+        // 이미 읽은 대화는 일시적인 빈 응답이나 읽기 오류로 지우지 않는다.
+        if (!first) return
+        // 대화창 기록이 아직 없으면 최근 요청·답변을 보여 주며 같은 창에서 계속 확인한다.
+        if (!handle) {
+          const next = JSON.stringify(['fallback', cur.prompt, cur.lastMessage])
+          if (next !== sig) {
+            sig = next
+            const keep = box.scrollTop
+            inner.replaceChildren(...fallbackMessages(cur))
+            box.scrollTop = stickBottom ? box.scrollHeight : keep
+          }
+          return
+        }
         // 첫 요청 전이면 기록이 아직 없다. 빈 대화로 두고 계속 읽는다.
         if (!cur.prompt && handle) {
           if (!waitingSince) inner.replaceChildren(h('div', { class: 'chat-empty' }, icon('message'), h('div', null, t('새 대화'))))
@@ -464,10 +489,7 @@ export function createDetail(api: DetailApi) {
           noTranscript.add(a.key)
           // 기록이 없으면 터미널 화면(없으면 마지막 요청·답변)으로 돌아간다.
           const sel = ws() && current(ws()!)
-          if (sel) {
-            if (handle) setMode(sel, 'screen')
-            else box.replaceWith(buildChatFallback(cur))
-          }
+          if (sel) setMode(sel, 'screen')
         }
         return
       }
@@ -479,8 +501,7 @@ export function createDetail(api: DetailApi) {
           prompt = (await api.call<{ lines: string[] }>('pod.tail', { terminal: handle }, true)).lines
         } catch {}
       }
-      const last = r.items[r.items.length - 1]
-      const next = `${r.items.length}|${last.at}|${last.k}|${cur.state}|${prompt.join('\n')}`
+      const next = JSON.stringify([r.items, r.truncated, cur.state === 'working', cur.state === 'working' ? cur.since : 0, !!blocked, prompt])
       if (next === sig) return
       sig = next
       const keep = box.scrollTop
@@ -507,7 +528,8 @@ export function createDetail(api: DetailApi) {
       else box.scrollTop = keep
     }
     stopPoll()
-    void tick()
+    // 본문을 DOM에 붙인 직후 읽는다. 생성 중에는 isConnected가 false다.
+    queueMicrotask(() => void tick())
     poll = window.setInterval(() => void tick(), 1500)
     return box
   }
@@ -522,12 +544,12 @@ export function createDetail(api: DetailApi) {
     if (s) sessionKey = keyOf(s)
     if (s) renderSessionHead(w, s)
     else sessionHead?.replaceChildren()
-    // 세션이 바뀌었을 때만 본문을 새로 만든다.
-    const sig = s ? `${keyOf(s)}|${terminalOf(s) ?? ''}|${s.kind === 'agent' && !terminalOf(s) ? s.agent.updatedAt : ''}` : 'none'
+    // 갱신 시각은 식별자에서 제외한다. 같은 세션의 스냅샷은 읽던 본문을 유지한다.
+    const sig = s ? JSON.stringify([w.id, w.path, keyOf(s), terminalOf(s), s.kind === 'agent' ? s.agent.type : s.connected, modeOf(s)]) : 'none'
     if (sig !== renderedSession) {
       renderedSession = sig
       renderSessionBody(w, s)
-    }
+    } else if (s) refreshBody?.(s)
   }
 
   /** 확대 보기도 본문 영역 안에 두어 관제 입력창을 가리지 않는다. */
@@ -646,6 +668,7 @@ export function createDetail(api: DetailApi) {
 
   /** 애니메이션 없이 바로 치운다. */
   function dispose(): void {
+    refreshBody = null
     if (host) api.onReserve?.(null)
     reserveSide = null
     stopPoll()
@@ -675,6 +698,7 @@ export function createDetail(api: DetailApi) {
   }
 
   function close(): void {
+    refreshBody = null
     api.onSelect?.(null)
     if (host && root) {
       api.onReserve?.(null)
