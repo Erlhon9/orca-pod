@@ -3867,14 +3867,16 @@ html.light .md-code {
   touch-action: none;
 }
 
-.g-ws .gc-head { cursor: grab; }
-.graph-wrap.moving .gc-head { cursor: grabbing; }
+.g-ws .gc-head, .g-hub .gh { cursor: grab; }
+.g-hub .gh { touch-action: none; }
+.graph-wrap.moving .gc-head, .g-hub.lifted .gh { cursor: grabbing; }
+.g-hub.lifted .gh { outline: 2px solid var(--ring); box-shadow: var(--shadow); }
 
 .graph-wrap.moving {
   cursor: grabbing;
 }
 
-.graph-wrap.moving .g-hub:not(.home) .gh {
+.graph-wrap.moving:not(.moving-hub) .g-hub:not(.home) .gh {
   outline-color: color-mix(in srgb, var(--t) 70%, transparent);
 }
 

@@ -8,7 +8,7 @@ Pod brings your repositories, topics, workspaces, and agent sessions onto one ma
 
 ## What you can do
 
-- **Explore the graph.** Group workspaces by topic or status, collapse groups, and zoom. Drag cards into free space to keep your own arrangement, or onto a group label to move them between groups. Positions are remembered for each repository view and grouping mode; Auto layout restores automatic placement.
+- **Explore the graph.** Group workspaces by topic or status, collapse groups, and zoom. Drag cards and group labels into free space to keep your own arrangement, or drop a card onto a group label to move it between groups. Positions are remembered for each repository view and grouping mode; Auto layout restores automatic placement.
 - **Find sessions that need you.** The board and agent views surface approval requests, unanswered questions, and active sessions. Read pending questions and choices in session windows and hover cards, then open the session in Orca to answer.
 - **Work inside the map.** Open a session window, read Claude conversations, and view terminal output. Control stays available while you read.
 - **Coordinate with Control.** Ask for a status update or relay a message to a selected session. Use the ✦ button on a session row to add a compact target chip.

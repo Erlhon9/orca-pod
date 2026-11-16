@@ -18,3 +18,12 @@ test('손상되거나 유효하지 않은 좌표는 복원하지 않는다', () 
   assert.deepEqual(readGraphPositions({ invalid: { x: 1, y: 2 }, '["unknown",null,"a"]': { x: 1, y: 2 } }), {})
   assert.deepEqual(readGraphPositions([]), {})
 })
+
+test('주제 위치와 카드 위치를 함께 저장하고 현재 범위만 초기화한다', () => {
+  const card = graphPositionKey('topic', 'demo', 'workspace-one')
+  const hub = graphPositionKey('topic', 'demo', '@group:h:demo:design')
+  const other = graphPositionKey('status', 'demo', '@group:h:demo:in-progress')
+  const positions = { [card]: { x: 20, y: 40 }, [hub]: { x: -90, y: 10 }, [other]: { x: 80, y: -40 } }
+  assert.deepEqual(readGraphPositions(positions), positions)
+  assert.deepEqual(clearGraphPositions(positions, 'topic', 'demo'), { [other]: positions[other] })
+})

@@ -399,7 +399,7 @@ export function createGraph(hooks: GraphHooks) {
     )
   )
   const groupSeg = h('div', { class: 'seg sm' })
-  const resetPositionsBtn = h('button', { class: 'pill-btn', title: t('카드 위치를 자동 배치로 되돌리기'), onClick: () => {
+  const resetPositionsBtn = h('button', { class: 'pill-btn', title: t('저장한 위치를 자동 배치로 되돌리기'), onClick: () => {
     hooks.resetPositions()
     positions.clear()
     relayout = true
@@ -488,7 +488,8 @@ export function createGraph(hooks: GraphHooks) {
         n.x = prev.x
         n.y = prev.y
       }
-      const fixed = n.kind === 'ws' && n.wsId ? hooks.position(n.wsId) : undefined
+      const positionId = n.kind === 'ws' ? n.wsId : n.kind === 'hub' ? `@group:${n.id}` : null
+      const fixed = positionId ? hooks.position(positionId) : undefined
       if (fixed) { n.x = fixed.x; n.y = fixed.y; n.fixed = true }
       nodes.push(n)
       byId.set(n.id, n)
@@ -902,7 +903,8 @@ export function createGraph(hooks: GraphHooks) {
           })
           pill.append(add)
         }
-        pill.addEventListener('click', () => toggleSection(p))
+        pill.addEventListener('click', () => { if (!suppressClick) toggleSection(p) })
+        pill.addEventListener('pointerdown', (ev) => startDrag(ev, p, null, g))
         fo.append(h('div', { class: 'gh-wrap' }, pill))
         g.append(fo)
       } else if (p.kind === 'more') {
@@ -947,12 +949,12 @@ export function createGraph(hooks: GraphHooks) {
   }
 
   /** 빈 곳에 놓으면 위치를 보관하고, 섹션 위에 직접 놓으면 소속을 바꾼다. */
-  function startDrag(ev: PointerEvent, n: GNode, w: WorkspaceView, g: SVGElement): void {
+  function startDrag(ev: PointerEvent, n: GNode, w: WorkspaceView | null, g: SVGElement): void {
     if (ev.button !== 0 || (ev.target as Element).closest('button, .gc-add') || !current) return
     const sx = ev.clientX
     const sy = ev.clientY
     const origin = { ...(shown.get(n.id) ?? { x: n.x, y: n.y }) }
-    const hubs = nodeEls.filter((x) => x.n.kind === 'hub' && x.n.repoId === n.repoId)
+    const hubs = w ? nodeEls.filter((x) => x.n.kind === 'hub' && x.n.repoId === n.repoId) : []
     const home = n.anchor?.kind === 'hub' ? n.anchor : null
     const line = s('path', { class: 'g-drag-line' })
     let active = false
@@ -977,6 +979,7 @@ export function createGraph(hooks: GraphHooks) {
         cancelAnimationFrame(settle)
         place(1)
         wrap.classList.add('moving')
+        wrap.classList.toggle('moving-hub', n.kind === 'hub')
         g.classList.add('lifted')
         nodeLayer.append(g)
         edgeLayer.append(line)
@@ -1027,7 +1030,7 @@ export function createGraph(hooks: GraphHooks) {
       suppressClick = true
       window.setTimeout(() => (suppressClick = false), 0)
       line.remove()
-      wrap.classList.remove('moving')
+      wrap.classList.remove('moving', 'moving-hub')
       g.classList.remove('lifted')
       cardEl?.style.removeProperty('--tilt')
       for (const hb of hubs) hb.g.classList.remove('home', 'drop')
@@ -1041,10 +1044,10 @@ export function createGraph(hooks: GraphHooks) {
         if (later) window.setTimeout(() => self.update(later.snap, later.visible), 480)
         return
       }
-      if (!to) {
+      if (!to || !w) {
         n.x = at.x; n.y = at.y; n.vx = n.vy = 0; n.fixed = true
         positions.set(n.id, { ...at })
-        hooks.setPosition(w.id, { ...at })
+        hooks.setPosition(w?.id ?? `@group:${n.id}`, { ...at })
         lastKey = ''
         self.update(later?.snap ?? current.snap, later?.visible ?? visibleRef)
         return

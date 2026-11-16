@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.7
+
+- Drag topic and status group labels to your preferred positions. Remember them across updates, collapsing and reopening groups, and reopening the panel, alongside manually placed workspace cards.
+- Keep normal clicks for collapse/expand, suppress hover previews while dragging, and reset saved group positions with Auto layout. Manually placed cards retain their own positions when a group label moves.
+
 ## 0.4.6
 
 - Hide hover previews when a graph-card drag starts and prevent pending timers or background updates from reopening them. Resume previews after the pointer moves and enters a card again, including after cancelled drags.
