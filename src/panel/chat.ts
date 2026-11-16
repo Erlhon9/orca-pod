@@ -2,6 +2,7 @@
 import { t, tt } from './i18n'
 import type { ChatItem } from '../transcript'
 import { duration, h, icon } from './ui'
+import { questionCard } from './questions'
 
 // ---------- 마크다운(필요한 만큼만, 항상 텍스트 노드로 넣어 HTML 이 해석되지 않게) ----------
 
@@ -241,6 +242,12 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
   }
   for (const it of items) {
     if (it.k === 'tool') {
+      if (it.questions?.length && !it.resolved) {
+        flushTools(false)
+        out.push(questionCard(it.questions))
+        turnEnd = it.at
+        continue
+      }
       tools.push(it)
       turnEnd = it.at
       continue

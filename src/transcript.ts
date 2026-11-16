@@ -1,10 +1,11 @@
 // Claude Code 대화 기록(~/.claude/projects/<경로>/<세션>.jsonl)을 대화창에 그릴 항목으로 바꾼다.
 // 워커와 테스트가 같이 쓰므로 Node·DOM 의존 없이 순수 함수로 둔다.
+import { readQuestions, type SessionQuestion } from './questions'
 
 export type ChatItem =
   | { k: 'user'; text: string; at: number; images: number }
   | { k: 'text'; text: string; at: number }
-  | { k: 'tool'; id: string; name: string; detail: string; at: number; error: boolean }
+  | { k: 'tool'; id: string; name: string; detail: string; at: number; error: boolean; questions?: SessionQuestion[]; resolved?: boolean }
   | { k: 'note'; text: string; at: number }
 
 type Json = Record<string, any>
@@ -47,6 +48,8 @@ export function toolDetail(name: string, input: Json | undefined): string {
       return oneLine(i.description)
     case 'Skill':
       return oneLine(i.skill)
+    case 'AskUserQuestion':
+      return oneLine(readQuestions(i).map(q => q.question).join(' / '))
     case 'WebFetch':
       return oneLine(i.url)
     case 'WebSearch':
@@ -89,8 +92,10 @@ export function parseLine(o: Json): ChatItem[] {
     const out: ChatItem[] = []
     for (const c of msg.content as Json[]) {
       if (c?.type === 'text' && String(c.text ?? '').trim()) out.push({ k: 'text', text: String(c.text).trim(), at })
-      else if (c?.type === 'tool_use')
-        out.push({ k: 'tool', id: String(c.id ?? ''), name: String(c.name ?? '도구'), detail: toolDetail(String(c.name ?? ''), c.input), at, error: false })
+      else if (c?.type === 'tool_use') {
+        const questions = c.name === 'AskUserQuestion' ? readQuestions(c.input) : []
+        out.push({ k: 'tool', id: String(c.id ?? ''), name: String(c.name ?? '도구'), detail: toolDetail(String(c.name ?? ''), c.input), at, error: false, ...(questions.length ? { questions } : {}) })
+      }
     }
     return out
   }
@@ -160,6 +165,11 @@ export function feed(state: TranscriptState, chunk: string): TranscriptState {
     for (const id of failedToolIds(o)) {
       const t = byId.get(id)
       if (t && t.k === 'tool') t.error = true
+    }
+    if (o.type === 'user' && Array.isArray(o.message?.content)) for (const result of o.message.content) {
+      if (result?.type !== 'tool_result') continue
+      const tool = byId.get(String(result.tool_use_id ?? ''))
+      if (tool?.k === 'tool' && tool.questions) tool.resolved = true
     }
     for (const it of parseLine(o)) {
       items.push(it)

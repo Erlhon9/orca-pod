@@ -9,7 +9,7 @@ Pod brings your repositories, topics, workspaces, and agent sessions onto one ma
 ## What you can do
 
 - **Explore the graph.** Group workspaces by topic or status, collapse groups, zoom, and drag cards between topics.
-- **Find sessions that need you.** The board and agent views surface approval requests, unanswered questions, and active sessions.
+- **Find sessions that need you.** The board and agent views surface approval requests, unanswered questions, and active sessions. Read pending questions and choices in session windows and hover cards, then open the session in Orca to answer.
 - **Work inside the map.** Open a session window, read Claude conversations, and view terminal output. Control stays available while you read.
 - **Coordinate with Control.** Ask for a status update or relay a message to a selected session. Use the ✦ button on a session row to add a compact target chip.
 - **Keep things organized.** Create topics and subtopics, start sessions, edit workspace notes, and close leftover terminal tabs.

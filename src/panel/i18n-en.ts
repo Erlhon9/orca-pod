@@ -1,6 +1,12 @@
 // 영어 사전. 키는 한국어 원문(i18n.ts 의 t() 에 넘기는 문구와 정확히 같아야 한다), 값은 영어. `{이름}` 자리표시자는 그대로 둔다.
 // 워커가 보내는 오류·메모 문구(worker.ts·runtime.ts·transcript.ts·model.ts)도 패널이 표시할 때 번역하므로 여기에 둔다.
 export const EN: Record<string, string> = {
+  "질문": "Question",
+  "답변을 기다리는 질문": "Question awaiting your answer",
+  "여러 항목을 선택할 수 있어요": "You can select multiple options.",
+  "Orca에서 이 세션을 열어 답변하세요": "Open this session in Orca to answer.",
+  "질문을 확인하는 중…": "Loading the question…",
+  "질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요": "The question is unavailable. Open this session in Orca to check it.",
   "대화창 — 최근 요청·답변만 조회해요. 직접 대화하려면 Orca에서 여세요.": "Chats — read the latest request and reply. Open the chat in Orca to continue directly.",
   " 버튼을 누르면 대상 칩이 추가돼요.": " to add a target chip.",
   "선택한 대상": "Selected targets",

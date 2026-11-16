@@ -2,6 +2,8 @@
 import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import type { ChatItem } from '../transcript'
+import { pendingQuestions, readQuestions } from '../questions'
+import { questionCard } from './questions'
 import { markdown, renderChat, setLinkHandler } from './chat'
 import { closeMenu, hideHover, openMenu } from './overlays'
 import { AGENT_STATE_LABEL, agentName, agoFull, avatar, duration, fill, h, icon, statusColor, statusLabel, topicColor } from './ui'
@@ -402,7 +404,8 @@ export function createDetail(api: DetailApi) {
 
   const fallbackMessages = (a: AgentView) => [
     ...(a.prompt ? [h('div', { class: 'msg-me' }, h('div', { class: 'bubble-me' }, a.prompt))] : []),
-    ...(a.lastMessage ? [h('div', { class: 'msg-agent' }, markdown(a.lastMessage))] : [])
+    ...(a.lastMessage ? [h('div', { class: 'msg-agent' }, markdown(a.lastMessage))] : []),
+    ...(a.state === 'waiting' && a.tool?.name === 'AskUserQuestion' && readQuestions(a.tool.input).length ? [questionCard(readQuestions(a.tool.input))] : [])
   ]
 
   function buildChatFallback(a: AgentView): HTMLElement {
@@ -410,7 +413,7 @@ export function createDetail(api: DetailApi) {
     const box = h('div', { class: 'convo' }, inner)
     let sig = ''
     const refresh = (cur: AgentView) => {
-      const next = JSON.stringify([cur.prompt, cur.lastMessage])
+      const next = JSON.stringify([cur.prompt, cur.lastMessage, cur.state === 'waiting' ? cur.tool : null])
       if (next === sig) return
       sig = next
       const keep = box.scrollTop
@@ -463,7 +466,7 @@ export function createDetail(api: DetailApi) {
         if (!first) return
         // 대화창 기록이 아직 없으면 최근 요청·답변을 보여 주며 같은 창에서 계속 확인한다.
         if (!handle) {
-          const next = JSON.stringify(['fallback', cur.prompt, cur.lastMessage])
+          const next = JSON.stringify(['fallback', cur.prompt, cur.lastMessage, cur.state === 'waiting' ? cur.tool : null])
           if (next !== sig) {
             sig = next
             const keep = box.scrollTop
@@ -494,14 +497,19 @@ export function createDetail(api: DetailApi) {
         return
       }
       first = false
-      const blocked = cur.state === 'blocked' && handle
+      const blocked = cur.state === 'blocked'
+      const waiting = cur.state === 'waiting'
+      const questions = waiting ? pendingQuestions(r.items) : []
+      const snapshotQuestions = waiting && cur.tool?.name === 'AskUserQuestion' ? readQuestions(cur.tool.input) : []
+      const fallbackQuestions = questions.length ? [] : snapshotQuestions
       let prompt: string[] = []
-      if (blocked) {
+      if (handle && (blocked || (waiting && !questions.length && !fallbackQuestions.length))) {
         try {
-          prompt = (await api.call<{ lines: string[] }>('pod.tail', { terminal: handle }, true)).lines
+          prompt = (await api.call<{ lines: string[] }>('pod.screen', { terminal: handle, lines: 120 }, true)).lines
         } catch {}
       }
-      const next = JSON.stringify([r.items, r.truncated, cur.state === 'working', cur.state === 'working' ? cur.since : 0, !!blocked, prompt])
+      if (!box.isConnected) return
+      const next = JSON.stringify([r.items, r.truncated, cur.state === 'working', cur.state === 'working' ? cur.since : 0, blocked, waiting, prompt, fallbackQuestions])
       if (next === sig) return
       sig = next
       const keep = box.scrollTop
@@ -513,13 +521,14 @@ export function createDetail(api: DetailApi) {
           open: openGroups,
           onLink: (url) => api.openUrl(url)
         }),
-        ...(blocked
+        ...(fallbackQuestions.length ? [questionCard(fallbackQuestions)] : []),
+        ...((blocked || waiting) && !questions.length && !fallbackQuestions.length
           ? [
               h(
                 'div',
                 { class: 'chat-prompt' },
-                h('div', { class: 'cp-head' }, icon('alert'), t('승인을 기다리고 있어요')),
-                h('pre', null, prompt.filter((l) => l.trim()).slice(-14).join('\n'))
+                h('div', { class: 'cp-head' }, icon('alert'), blocked ? t('승인을 기다리고 있어요') : t('답변을 기다리는 질문')),
+                h('pre', null, prompt.filter((l) => l.trim()).join('\n') || t('질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요'))
               )
             ]
           : [])

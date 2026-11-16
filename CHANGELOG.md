@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Show pending questions, choices, descriptions, and multiple-selection guidance directly in session details and hover cards. Preserve structured question inputs from Claude transcripts and clear the pending state when their tool result arrives.
+- Show ordinary session hover previews without raw terminal screens. For waiting or approval prompts without structured data, keep the current terminal output as a bounded, wrapped fallback.
+- Keep hover cards inside the viewport when asynchronous content changes their height.
+
 ## 0.4.1
 
 - Keep an open session conversation mounted when background metadata changes, preserving scroll position, text selection, and expanded tool groups.

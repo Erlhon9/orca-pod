@@ -81,6 +81,9 @@ card.addEventListener('mouseenter', () => clearTimeout(hideTimer))
 card.addEventListener('mouseleave', () => {
   hideTimer = window.setTimeout(hideNow, 160)
 })
+// 비동기로 질문·출력이 들어와 높이가 바뀌어도 화면 안에 머문다.
+new ResizeObserver(() => { if (card.classList.contains('show')) place() }).observe(card)
+window.addEventListener('resize', () => { if (card.classList.contains('show')) place() })
 
 /* ---------- 메뉴 ---------- */
 

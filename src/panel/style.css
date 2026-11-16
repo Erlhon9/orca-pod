@@ -1189,6 +1189,9 @@ kbd {
   position: fixed;
   z-index: 40;
   width: min(340px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 12px;
   border-radius: 14px;
   background: var(--popover);
@@ -1273,17 +1276,24 @@ kbd {
 }
 
 .hc-sub {
+  overflow-wrap: anywhere;
   margin-top: 2px;
   font-size: 11px;
   color: var(--muted);
 }
 
 .hc-rows {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   display: grid;
   gap: 9px;
   margin-top: 11px;
   padding-top: 11px;
   border-top: 1px solid var(--line);
+}
+
+.hc-row {
+  min-width: 0;
 }
 
 .hc-row .k {
@@ -1338,18 +1348,19 @@ kbd {
 }
 
 .tail {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   max-height: 150px;
-  overflow: hidden;
+  overflow: auto;
   padding: 8px 9px;
   border-radius: 9px;
   background: color-mix(in srgb, #000 35%, var(--card));
   border: 1px solid var(--line);
   font: 10.5px/1.45 var(--mono);
   color: color-mix(in srgb, var(--fg) 85%, transparent);
-  white-space: pre;
-  -webkit-mask: linear-gradient(180deg, transparent, #000 28%);
-  mask: linear-gradient(180deg, transparent, #000 28%);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 html.light .tail {
@@ -3327,6 +3338,26 @@ html.light .md-code {
   word-break: break-word;
   color: var(--fg);
 }
+
+.session-questions {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--a-waiting) 45%, var(--line));
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--a-waiting) 6%, var(--card));
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sq-heading { display: flex; align-items: center; gap: 6px; font-weight: 650; color: var(--a-waiting); }
+.sq-question { margin-top: 9px; }
+.sq-label { color: var(--muted); font-size: 10px; }
+.sq-text { font-weight: 600; white-space: pre-wrap; }
+.sq-options { margin: 8px 0; padding-left: 22px; }
+.sq-options li { padding: 3px 0; }
+.sq-options li div { color: var(--muted); white-space: pre-wrap; }
+.sq-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
 
 .chat-foot {
   display: flex;

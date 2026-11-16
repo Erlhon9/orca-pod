@@ -4,6 +4,9 @@ import type { AgentView, RepoView, Snapshot, TerminalRef, Topic, WorkspaceView }
 import { topicPath, topicRoot } from '../model'
 import { createController, type ControlView } from './controller'
 import { createDetail } from './detail'
+import { pendingQuestions, readQuestions } from '../questions'
+import type { ChatItem } from '../transcript'
+import { questionCard } from './questions'
 import { dragJustEnded, draggableRow } from './dnd'
 import { burstAt, celebrate, floatText } from './fx'
 import { createGraph } from './graph'
@@ -393,7 +396,7 @@ function tailBlock(terminal: string): HTMLElement {
       return
     }
     pre.classList.remove('loading')
-    pre.textContent = lines.slice(-10).join('\n')
+    pre.textContent = lines.join('\n')
   }
   if (cached && Date.now() - cached.at < 4000) {
     setTail(cached.lines)
@@ -412,11 +415,27 @@ function tailBlock(terminal: string): HTMLElement {
   return pre
 }
 
+function waitingQuestion(w: WorkspaceView, a: AgentView): HTMLElement {
+  const box = h('div', { class: 'hc-question' })
+  const known = a.tool?.name === 'AskUserQuestion' ? readQuestions(a.tool.input) : []
+  if (known.length) { box.append(questionCard(known)); return box }
+  box.append(h('div', { class: 'v' }, t('질문을 확인하는 중…')))
+  void call<{ items: ChatItem[] }>('pod.conversation', { path: w.path, key: a.key, type: a.type, title: a.title, prompt: a.prompt, since: a.since, others: w.agents.filter(other => other.key !== a.key).map(other => other.key) }, true)
+    .then(r => pendingQuestions(r.items ?? []))
+    .catch(() => [])
+    .then(questions => box.replaceChildren(questions.length ? questionCard(questions) : h('div', null,
+      h('div', { class: 'k' }, t('답변을 기다리는 질문')),
+      a.terminal ? tailBlock(a.terminal) : h('div', { class: 'v' }, t('질문 내용을 가져오지 못했어요. Orca에서 이 세션을 열어 확인하세요'))
+    )))
+  return box
+}
+
 function agentCard(wsId: string, key: string): HTMLElement | null {
   const w = ws(wsId)
   const a = w?.agents.find((x) => x.key === key)
   if (!w || !a) return null
   const rows: HTMLElement[] = []
+  if (a.state === 'waiting') rows.push(h('div', { class: 'hc-row' }, waitingQuestion(w, a)))
   if (a.prompt) rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('마지막 요청')), h('div', { class: 'v' }, clip(a.prompt, 400))))
   if (a.tool && (a.state === 'working' || a.state === 'blocked'))
     rows.push(
@@ -429,7 +448,7 @@ function agentCard(wsId: string, key: string): HTMLElement | null {
     )
   if (a.lastMessage)
     rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('마지막 답변')), h('div', { class: 'v' }, clip(a.lastMessage, 500))))
-  if (a.terminal && a.state !== 'done') rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('터미널')), tailBlock(a.terminal)))
+  if (a.terminal && a.state === 'blocked') rows.push(h('div', { class: 'hc-row' }, h('div', { class: 'k' }, t('승인을 기다리고 있어요')), tailBlock(a.terminal)))
   const meta: HTMLElement[] = []
   if (a.subagents > 0) meta.push(h('span', null, icon('agents'), t(`하위 에이전트 {subagents}`, { subagents: a.subagents })))
   meta.push(h('span', null, icon(a.surface === 'chat' ? 'message' : 'terminal'), a.surface === 'chat' ? t('대화창') : t('터미널')))
