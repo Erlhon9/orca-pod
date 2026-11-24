@@ -16,11 +16,13 @@ export interface RelayDeps {
   snapshot(): Promise<Snapshot>
   cli(args: string[]): Promise<unknown>
   active?(): boolean
+  readOnly?: boolean
 }
 
 /** 내장 관제 도구. 실제 실행은 워커가 인자 배열로 수행하며 모델에 셸을 열지 않는다. */
 export async function relayTool(deps: RelayDeps, name: string, input: any): Promise<unknown> {
   if (!['pod_sessions', 'pod_read_session', 'pod_send_session'].includes(name)) throw new Error('모르는 관제 도구입니다')
+  if (deps.readOnly && name === 'pod_send_session') throw new Error('브리핑 요청에서는 세션에 지시를 전달할 수 없습니다')
   const allowed = name === 'pod_sessions' ? [] : name === 'pod_read_session' ? ['key'] : ['key', 'text']
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !allowed.includes(key))) throw new Error('관제 도구 입력을 확인하세요')
   if (name !== 'pod_sessions' && (typeof input.key !== 'string' || input.key.length > 4096)) throw new Error('전달할 세션을 찾지 못했습니다')
@@ -30,7 +32,7 @@ export async function relayTool(deps: RelayDeps, name: string, input: any): Prom
   if (name === 'pod_sessions') {
     return Object.values(snap.workspaces).flatMap(w => w.agents.filter(a => a.state !== 'done' && isControlProvider(a.type)).map(a => ({
       key: a.key, workspace: w.name, repo: w.repo, title: a.title, agent: a.type, state: a.state,
-      surface: a.surface, canSend: !!a.terminal && isControlProvider(a.type),
+      surface: a.surface, canSend: !deps.readOnly && !!a.terminal && isControlProvider(a.type),
       lastMessage: a.lastMessage.slice(-2000)
     })))
   }

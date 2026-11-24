@@ -53,6 +53,17 @@ test('전송 오류는 자동 재시도하지 않는다', async () => {
   assert.equal(sends, 1)
 })
 
+test('조회 전용 브리핑은 세션을 읽을 수 있지만 지시 전달 도구는 실행하지 못한다', async () => {
+  let calls = 0
+  const deps = { readOnly: true, snapshot: async () => snap(), cli: async () => { calls++; return {} } }
+  const read = await relayTool(deps, 'pod_read_session', { key: 'chat-key' }) as any
+  assert.equal(read.lastMessage, '답')
+  const sessions=await relayTool(deps,'pod_sessions',{}) as any[]
+  assert.equal(sessions.some(session=>session.canSend),false)
+  await assert.rejects(() => relayTool(deps, 'pod_send_session', { key: 'claude-key', text: 'Send' }))
+  assert.equal(calls, 0)
+})
+
 test('입력에 명령·파일 경로를 섞거나 터미널 핸들을 변조해도 실행하지 않는다', async () => {
   let calls = 0
   const deps = { snapshot: async () => snap(), cli: async () => { calls++; return {} } }

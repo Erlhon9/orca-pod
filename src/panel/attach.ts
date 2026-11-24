@@ -9,7 +9,7 @@ const TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 const MAX = 15 * 1024 * 1024
 const MAX_COUNT = 6
 
-interface Item {
+export interface AttachmentDraftItem {
   file: File
   /** 미리보기(blob URL). 빼거나 비울 때 놓아준다. */
   thumb: string
@@ -25,6 +25,8 @@ export interface Attach {
   compose(body: string): Promise<string>
   /** 사진을 파일 없이 그대로(base64) 꺼낸다. */
   images(): Promise<{ type: string; data: string }[]>
+  take(): AttachmentDraftItem[]
+  restore(items: AttachmentDraftItem[]): void
   clear(): void
   /** 보내는 동안 붙이기·빼기를 막는다. */
   lock(on: boolean): void
@@ -62,7 +64,7 @@ export function attachments(
   opts: { call: Call; toast: (m: string, kind?: 'ok' | 'err') => void; onChange: () => void }
 ): Attach {
   guardWindowDrop()
-  const items: Item[] = []
+  const items: AttachmentDraftItem[] = []
   let locked = false
   const tray = h('div', { class: 'attach-tray', hidden: true })
   // 문서에 붙이지 않은 파일 입력도 click() 으로 고르기 창이 열린다.
@@ -83,7 +85,7 @@ export function attachments(
     )
     opts.onChange()
   }
-  const remove = (it: Item) => {
+  const remove = (it: AttachmentDraftItem) => {
     if (locked) return
     const i = items.indexOf(it)
     if (i < 0) return
@@ -148,6 +150,15 @@ export function attachments(
     },
     async images() {
       return Promise.all(items.map(async (it) => ({ type: it.file.type, data: await readBase64(it.file) })))
+    },
+    take() {
+      const saved = items.splice(0)
+      render()
+      return saved
+    },
+    restore(saved) {
+      items.push(...saved)
+      render()
     },
     clear() {
       for (const it of items) URL.revokeObjectURL(it.thumb)

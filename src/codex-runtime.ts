@@ -26,6 +26,8 @@ export class CodexControlRuntime {
   private since = 0
   private rev = 0
   private error: string | null = null
+  private requestId: string | null = null
+  private outcome: ControlView['outcome'] = null
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private generation = 0
 
@@ -36,7 +38,7 @@ export class CodexControlRuntime {
   private now() { return this.deps.now?.() ?? Date.now() }
   async load(): Promise<void> {}
   view(): ControlView {
-    return { items: this.items.slice(-240), live: this.live, busy: this.busy, since: this.since, sessionId: this.thread, error: this.error, rev: this.rev }
+    return { items: this.items.slice(-240), live: this.live, busy: this.busy, since: this.since, sessionId: this.thread, error: this.error, requestId: this.busy ? this.requestId : null, outcome: this.outcome, rev: this.rev }
   }
   private changed(): void {
     this.rev++
@@ -115,7 +117,7 @@ export class CodexControlRuntime {
     this.ready ??= this.initialize()
     return this.ready
   }
-  async send(text: string, images: ControlImage[] = [], context = ''): Promise<void> {
+  async send(text: string, images: ControlImage[] = [], context = '', requestId?: string): Promise<void> {
     const body = text.trim()
     if (!body && !images.length) throw new Error('빈 메시지')
     if (this.busy) throw new Error('작업 중')
@@ -123,6 +125,8 @@ export class CodexControlRuntime {
     this.busy = true
     this.since = this.now()
     this.error = null
+    this.requestId = requestId ?? null
+    this.outcome = null
     const generation = this.generation
     this.changed()
     try {
@@ -133,7 +137,7 @@ export class CodexControlRuntime {
         ...images.map(im => ({ type: 'image', url: `data:${im.type};base64,${im.data}` }))
       ]
       // 미리 올려 두어 turn/start 응답보다 먼저 도착하는 완료 알림도 사용자 말 뒤에 놓는다.
-      this.push({ k: 'user', text: body, at: this.since, images: images.length })
+      this.push({ k: 'user', text: body, at: this.since, images: images.length, ...(this.requestId ? { requestId: this.requestId } : {}) })
       const result = await this.request('turn/start', { threadId: this.thread, input })
       if (generation !== this.generation) return
       this.turn = this.busy ? result.turn?.id ?? null : null
@@ -147,12 +151,14 @@ export class CodexControlRuntime {
     }
   }
   private finish(error: string | null = null): void {
-    if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now() })
+    if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
     this.live = ''
     this.busy = false
     this.turn = null
     this.error = error
-    if (error) this.push({ k: 'note', text: error, at: this.now() })
+    if (error) this.push({ k: 'note', text: error, at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
+    if (this.requestId) this.outcome = { requestId: this.requestId, status: error === '중단함' ? 'interrupted' : error ? 'failed' : 'complete' }
+    this.requestId = null
     this.changed()
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.idleTimer = setTimeout(() => this.shutdown(), 30 * 60_000)
@@ -196,10 +202,10 @@ export class CodexControlRuntime {
       else if (o.method === 'item/agentMessage/delta') { this.live += v.delta ?? ''; this.changed() }
       else if (o.method === 'item/completed' && v.item?.type === 'agentMessage') {
         this.live = ''
-        this.push({ k: 'text', text: v.item.text, at: this.now() })
+        this.push({ k: 'text', text: v.item.text, at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
         this.changed()
       } else if (o.method === 'item/completed' && v.item?.type === 'dynamicToolCall') {
-        this.push({ k: 'tool', id: v.item.id, name: v.item.tool, detail: JSON.stringify(v.item.arguments ?? {}).slice(0, 240), at: this.now(), error: v.item.status !== 'completed' })
+        this.push({ k: 'tool', id: v.item.id, name: v.item.tool, detail: JSON.stringify(v.item.arguments ?? {}).slice(0, 240), at: this.now(), error: v.item.status !== 'completed', ...(this.requestId ? { requestId: this.requestId } : {}) })
         this.changed()
       } else if (o.method === 'turn/completed') {
         this.finish(v.turn?.status === 'failed' ? '응답 오류' : v.turn?.status === 'interrupted' ? '중단함' : null)
@@ -209,7 +215,7 @@ export class CodexControlRuntime {
   private toolResult(id: number | string, result: unknown, success: boolean, from: ChildProcess | null): void {
     if (from !== this.proc) return
     const text = JSON.stringify(result) ?? 'null'
-    this.push({ k: 'note', text: `Tool receipt: ${text.slice(0, 4000)}`, at: this.now() })
+    this.push({ k: 'note', text: `Tool receipt: ${text.slice(0, 4000)}`, at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
     this.changed()
     try { this.write({ id, result: { contentItems: [{ type: 'inputText', text }], success } }) } catch {}
   }
@@ -221,6 +227,7 @@ export class CodexControlRuntime {
     this.thread = null
     this.items = []
     this.error = null
+    this.outcome = null
     this.deps.saveSession(null)
     this.changed()
   }

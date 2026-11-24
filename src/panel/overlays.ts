@@ -109,7 +109,7 @@ window.visualViewport?.addEventListener('resize', () => { if (card.classList.con
 /* ---------- 메뉴 ---------- */
 
 export type MenuItem =
-  | { label: string; icon?: string; hint?: string; danger?: boolean; checked?: boolean; onSelect: () => void }
+  | { label: string; icon?: string; hint?: string; danger?: boolean; checked?: boolean; disabled?: boolean; onSelect: () => void }
   | { section: string }
   | { custom: HTMLElement }
   | 'sep'
@@ -142,11 +142,13 @@ export function openMenu(at: { x: number; y: number } | Element, items: MenuItem
         'button',
         {
           class: 'mi',
+          disabled: item.disabled,
           role: item.checked === undefined ? 'menuitem' : 'menuitemradio',
           'aria-checked': item.checked === undefined ? undefined : String(item.checked),
           style: item.danger ? { color: 'var(--a-blocked)' } : undefined,
           onClick: (ev: Event) => {
             ev.stopPropagation()
+            if (item.disabled) return
             closeMenu(options?.keyboard ?? false)
             item.onSelect()
           }
@@ -191,8 +193,9 @@ export function openMenu(at: { x: number; y: number } | Element, items: MenuItem
   menuPlace = position
   position()
   if (options?.keyboard) {
-    const buttons = [...el.querySelectorAll<HTMLButtonElement>('button.mi')]
+    const buttons = [...el.querySelectorAll<HTMLButtonElement>('button.mi:not(:disabled)')]
     el.addEventListener('keydown', ev => {
+      if (!buttons.length) return
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
       let next = index
       if (ev.key === 'ArrowDown') next = (index + 1) % buttons.length
@@ -205,7 +208,7 @@ export function openMenu(at: { x: number; y: number } | Element, items: MenuItem
       buttons[next]?.focus({ preventScroll: true })
       buttons[next]?.scrollIntoView({ block: 'nearest' })
     })
-    const selected = el.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? buttons[0]
+    const selected = el.querySelector<HTMLButtonElement>('[aria-checked="true"]:not(:disabled)') ?? buttons[0]
     selected?.focus({ preventScroll: true })
     selected?.scrollIntoView({ block: 'nearest' })
   }

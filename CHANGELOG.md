@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.5.0
+
+Control is now the main place to understand, prioritize, and continue work across sessions. The map stays available for navigation, with dated work history stored independently of provider conversations.
+
+### Control and continuity
+
+- Select a workspace or session to prepare its context in Control. Preserve target-specific text and attachment drafts, request labels, and source navigation across selection changes.
+- Add on-demand overviews, configurable periodic briefings, and important-change notices for embedded Claude and Codex. Choose all projects or the current scope. Skip unchanged input, defer while composing or busy, and back off failed requests.
+- Store completed overviews and per-target briefings separately from provider history. Failed or interrupted requests retain the last good result; resetting or switching providers preserves Pod's records.
+- Choose a fixed Bottom, Right, or Left Control position, or opt into Auto. Preserve placement through resizing, folding, and view changes; provide full reading and restore controls.
+- Simplify header actions, move New conversation into the Control menu, and remove the how-to screen and instructional empty states.
+
+### Priorities and work history
+
+- Add P0/P1/P2 badges to workspace cards, board rows, and Control, with a shared priority filter and a visible reason.
+- Persist user overrides and support returning to automatic classification. P0 is user-designated; automatic P1 reflects real questions, blocked sessions, or failed PR checks without an active session. Ordinary waiting is P2.
+- Record observed replies, questions, notes, workspace states, and PR changes in dated history. Group the day by workspace, inspect evidence, classify records, and explicitly return to the current workspace to continue.
+- Preserve historical names, topics, and session references. Mark pre-collection dates and collection gaps; disable current-work actions while browsing history.
+- Store immutable history pages and publish their references with a committed collection cursor. Preserve the last good record state on failure and retain history independently of recent briefing/request limits.
+- Give Control bounded, target-scoped recent history as source data. Keep agent claims, observed check results, user confirmations, and withdrawals distinct.
+
+### Navigation and layout
+
+- Browse by repository or complete topic path across repositories, and narrow by subtopic consistently in Graph, Board, and Agent views.
+- Let the selected embedded Control agent propose a repository's topics and assignments. Review before applying; reject stale proposals and preserve completed work classifications.
+- Keep Auto arrange visible and usable in current and historical views. Arrange history independently without overwriting current manual positions; separate topic branches using their actual bounds and preserve stable placement across metadata updates.
+- Place date navigation above the map, separate from the docked Control panel.
+- Keep cards readable in narrow panels with explicit overview and reading modes. Reveal collapsed groups when navigating to work needing attention.
+- Use subtle topic zones and standard provider icons. Keep Context, source windows, zoom controls, and scrolling usable in constrained layouts.
+
+### Reliability and compatibility
+
+- Preserve explicit review checkpoints without treating timestamp-only updates as new work. Reviewing, approval, instruction delivery, and completion remain distinct.
+- Track request identity and outcomes across providers; retain target references and drafts through asynchronous updates, failures, and cancellation.
+- Preserve existing work notes, preferences, layouts, and provider selection. Older development history containing XP fields remains readable; experience counters, levels, and pixel session characters are not part of this release.
+- Extend unit, worker, security, and fictional DOM flow coverage. No new plugin capabilities or background service are introduced.
+
+### Current boundaries
+
+Automatic briefings require activation and a visible Pod panel. History records observations since collection starts and uses bounded excerpts, not complete transcripts or exact historical replay. Structured promise tracking, complete automatic decision extraction, and bot integration remain future work. Native approvals and messages to read-only chat sessions continue in Orca.
+
 ## 0.4.9
 
 - Add a persistent Add session button below session conversations and terminal views. Choose Claude, Codex, or a terminal without scrolling back to the tab bar.

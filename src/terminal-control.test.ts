@@ -102,3 +102,23 @@ test('전환 뒤 늦게 끝난 실행은 다시 메시지를 보내지 않고 �
   assert.equal(rt.view().live, '')
   await rt.shutdown()
 })
+
+test('터미널 전달 기록은 요청 식별자를 남기며 화면은 영속 응답이 아닌 live 관측으로만 둔다', async () => {
+  const { runtime } = setup()
+  try {
+    await runtime.send('상태 확인', [], '', 'control-3')
+    const v = runtime.view()
+    assert.equal(v.requestId, null)
+    assert.equal(v.outcome, null)
+    assert.equal(v.items.find(item => item.k === 'user')?.requestId, 'control-3')
+    assert.equal(v.items.find(item => item.k === 'note')?.requestId, 'control-3')
+    assert.equal(v.items.some(item => item.k === 'text'), false)
+  } finally { await runtime.shutdown() }
+})
+
+test('터미널을 종료해 중단하면 해당 요청의 명시적 outcome을 남긴다', async () => {
+  const { runtime } = setup()
+  await runtime.send('계속', [], '', 'control-stop')
+  await runtime.shutdown()
+  assert.deepEqual(runtime.view().outcome, { requestId: 'control-stop', status: 'interrupted' })
+})

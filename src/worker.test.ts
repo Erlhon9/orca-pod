@@ -4,6 +4,22 @@ import * as main from './worker'
 import { readFile, unlink } from 'node:fs/promises'
 import { ATTACH_DIR, cleanTopics, mergeSuggested, pickControlHome, userMessage } from './worker'
 
+test('자동 브리핑은 기본 중지이며 주기 설정을 검증하고 설정만으로 모델을 실행하지 않는다', async () => {
+  const worker=await mountWorker(main,{host:mockHost({})})
+  const result=await worker.request('pod.control.watch.check',{scope:{repoId:null,topicKey:null},manual:false}) as any
+  assert.equal(result.started,false)
+  assert.equal(result.reason,'disabled')
+  const settings=await worker.request('pod.control.watch.configure',{intervalMinutes:5,changes:true,scopeMode:'all'}) as any
+  assert.equal(settings.intervalMinutes,5)
+  assert.equal(settings.changes,true)
+  for(const input of [{intervalMinutes:-1,changes:true},{intervalMinutes:241,changes:true},{intervalMinutes:1.5,changes:true},{intervalMinutes:5,changes:true,command:'not allowed'}] as Record<string,string|number|boolean>[]) {
+    let failed=false
+    try {await worker.request('pod.control.watch.configure',input)} catch {failed=true}
+    assert.equal(failed,true)
+  }
+  await worker.deactivate()
+})
+
 test('빈 메시지는 보내지 않는다', async () => {
   const worker = await mountWorker(main, { host: mockHost({}) })
   let failed = false
@@ -126,4 +142,25 @@ test('관제는 Claude 가 최근에 돈 저장소에, 그 저장소 메인 워�
   assert.equal(pickControlHome(snap([w('a', 'r1', true, 0), w('b', 'r2', false, 50), w('c', 'r2', true, 10)])), 'c')
   assert.equal(pickControlHome(snap([w('a', 'r1', true, 0), w('b', 'r2', false, 50)])), 'b')
   assert.equal(pickControlHome(snap([w('a', 'r1', true, 0)])), null)
+})
+
+test('날짜 기록 조회와 잘못된 적립 입력은 모델·작업 세션을 실행하지 않는다',async()=>{
+  const host=mockHost({}),worker=await mountWorker(main,{host})
+  const view=await worker.request('pod.progress.view',{timezone:'Asia/Seoul'}) as any
+  assert.equal(view.count,0);assert.equal('totalXp' in view,false);assert.equal(view.beforeCollection,true)
+  let failed=false
+  try{await worker.request('pod.progress.change',{id:'missing',xp:1000,kind:'completion'})}catch{failed=true}
+  assert.equal(failed,true)
+  assert.equal(host.calls.some(call=>/agent.launch|terminal.send|workspace.open/.test(call.method)),false)
+  await worker.deactivate()
+})
+
+test('중요도 조회와 잘못된 P0/P1/P2 입력은 작업 실행이나 상태 변경을 하지 않는다',async()=>{
+  const host=mockHost({}),worker=await mountWorker(main,{host})
+  assert.deepEqual(await worker.request('pod.priority.view',{}),{})
+  let failed=false
+  try{await worker.request('pod.priority.set',{id:'w',level:'P9'})}catch{failed=true}
+  assert.equal(failed,true)
+  assert.equal(host.calls.some(call=>/agent.launch|terminal.send|workspace.open/.test(call.method)),false)
+  await worker.deactivate()
 })

@@ -220,6 +220,7 @@ export interface ChatRenderOptions {
   open: Set<string>
   onLink(url: string): void
   onQuestion?(): void
+  scope?(item: ChatItem): { label: string; text?: string } | null
 }
 
 /** 항목을 턴 단위로 묶어 그린다. */
@@ -254,6 +255,8 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
       continue
     }
     flushTools(false)
+    const scope = o.scope?.(it)
+    if (scope && (it.k === 'user' || it.k === 'text')) out.push(h('div', { class: 'chat-scope' }, scope.label))
     if (it.k === 'user') {
       endTurn()
       turnStart = it.at
@@ -261,7 +264,7 @@ export function renderChat(items: ChatItem[], o: ChatRenderOptions): HTMLElement
         h(
           'div',
           { class: 'msg-me' },
-          h('div', { class: 'bubble-me' }, it.images ? h('span', { class: 'img-chip' }, t(`이미지 {images}장`, { images: it.images })) : null, it.text)
+          h('div', { class: 'bubble-me' }, it.images ? h('span', { class: 'img-chip' }, t(`이미지 {images}장`, { images: it.images })) : null, scope?.text ?? it.text)
         )
       )
     } else if (it.k === 'text') {

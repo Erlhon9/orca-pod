@@ -209,3 +209,20 @@ test('죽은 프로세스에 쓰다 난 입력 스트림 오류는 워커를 죽
   assert.equal(rt.view().busy, false)
   assert.equal(rt.view().error, '관제가 종료됨')
 })
+
+test('요청 식별자는 새 대화 항목과 진행 중 화면에만 붙이고, 과거 항목은 건드리지 않는다', async () => {
+  const { rt } = setup('s-9')
+  try {
+    await rt.load()
+    rt.send('확인', [], '', 'control-1')
+    assert.equal(rt.view().requestId, 'control-1')
+    assert.equal(rt.view().items[0].requestId, undefined)
+    assert.equal(rt.view().items[1].requestId, 'control-1')
+    rt.onData(line({ type: 'assistant', message: { content: [{ type: 'text', text: '답변' }] } }))
+    rt.onData(line({ type: 'result', subtype: 'success', is_error: false }))
+    const v = rt.view()
+    assert.equal(v.requestId, null)
+    assert.deepEqual(v.outcome, { requestId: 'control-1', status: 'complete' })
+    assert.equal(v.items.find(item => item.k === 'text' && item.text === '답변')?.requestId, 'control-1')
+  } finally { rt.shutdown() }
+})

@@ -57,6 +57,8 @@ export function s(tag: string, props: Props = null, ...children: Child[]): SVGEl
 }
 
 const PATHS: Record<string, string> = {
+  flag: '<path d="M5 21V4m0 0c4-3 7 3 14 0v10c-7 3-10-3-14 0"/>',
+  book: '<path d="M12 5c-3-2-7-2-10-1v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1zm0 0v15"/>',
   refresh:
     '<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -79,6 +81,12 @@ const PATHS: Record<string, string> = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/>',
   fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  expand: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5M3 3l6 6M21 3l-6 6M3 21l6-6M21 21l-6-6"/>',
+  restore: '<path d="M3 8h5V3M21 8h-5V3M8 21v-5H3M16 21v-5h5M8 8 3 3M16 8l5-5M8 16l-5 5M16 16l5 5"/>',
+  dockBottom: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14h18"/><path d="M6 17h12"/>',
+  dockRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16M17.5 8v8"/>',
+  dockLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M6.5 8v8"/>',
+  dockAuto: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m9 8-3 4 3 4M15 8l3 4-3 4"/>',
   zoomIn: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M11 8v6M8 11h6"/>',
   zoomOut: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6"/>',
   send: '<path d="M21 3 10 14M21 3l-6.5 18-4-8-8-4z"/>',

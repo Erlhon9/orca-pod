@@ -2,11 +2,12 @@
 // 워커와 테스트가 같이 쓰므로 Node·DOM 의존 없이 순수 함수로 둔다.
 import { readQuestions, type SessionQuestion } from './questions'
 
-export type ChatItem =
+export type ChatItem = (
   | { k: 'user'; text: string; at: number; images: number }
   | { k: 'text'; text: string; at: number }
   | { k: 'tool'; id: string; name: string; detail: string; at: number; error: boolean; questions?: SessionQuestion[]; resolved?: boolean }
   | { k: 'note'; text: string; at: number }
+) & { requestId?: string; controlKind?: 'watch' }
 
 type Json = Record<string, any>
 

@@ -18,6 +18,10 @@ export interface ControlView {
   since: number
   sessionId: string | null
   error: string | null
+  /** 진행 중인 관제 요청의 불변 식별자. */
+  requestId?: string | null
+  /** 마지막으로 끝난 요청의 명시적 결과. 도구 영수증 같은 note로 추론하지 않는다. */
+  outcome?: { requestId: string; status: 'complete' | 'failed' | 'interrupted' } | null
   /** 바뀔 때마다 늘어나는 번호(화면이 다시 그릴지 가른다). */
   rev: number
 }
@@ -46,6 +50,8 @@ export class ControlRuntime {
   private busy = false
   private since = 0
   private error: string | null = null
+  private requestId: string | null = null
+  private outcome: ControlView['outcome'] = null
   private sessionId: string | null
   private loaded = false
   private rev = 0
@@ -75,6 +81,8 @@ export class ControlRuntime {
       since: this.since,
       sessionId: this.sessionId,
       error: this.error,
+      requestId: this.busy ? this.requestId : null,
+      outcome: this.outcome,
       rev: this.rev
     }
   }
@@ -129,9 +137,11 @@ export class ControlRuntime {
     if (!stopped) this.deps.onStop?.()
     if (this.busy) {
       this.busy = false
-      if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now() })
+      if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
       this.live = ''
-      this.push({ k: 'note', text: stopped ? '중단함' : '응답이 끊김', at: this.now() })
+      this.push({ k: 'note', text: stopped ? '중단함' : '응답이 끊김', at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
+      if (this.requestId) this.outcome = { requestId: this.requestId, status: stopped ? 'interrupted' : 'failed' }
+      this.requestId = null
     }
     if (!stopped && code) {
       // 이어 가기에 실패했으면(세션을 못 열면 init 전에 끝난다) 다음엔 새 대화로 시작한다. 같은 실패를 되풀이하지 않게.
@@ -177,15 +187,18 @@ export class ControlRuntime {
       } else if ((o.type === 'assistant' || o.type === 'user') && !o.parent_tool_use_id) {
         if (o.type === 'assistant') this.live = ''
         // 기록 파일과 같은 모양이라 같은 파서를 쓴다(시각만 붙인다).
+        const itemStart = this.state.items.length
         this.state = feed(this.state, `${JSON.stringify({ ...o, timestamp: new Date(this.now()).toISOString() })}\n`)
-        this.state.items = this.state.items.map(visibleControlItem)
+        this.state.items = this.state.items.map((item, index) => visibleControlItem(index < itemStart || !this.requestId ? item : { ...item, requestId: this.requestId }))
         this.changed()
       } else if (o.type === 'result') {
         this.busy = false
-        if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now() })
+        if (this.live.trim()) this.push({ k: 'text', text: this.live.trim(), at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
         this.live = ''
-        if (from && this.stopped.has(from)) this.push({ k: 'note', text: '중단함', at: this.now() })
-        else if (o.is_error) this.push({ k: 'note', text: '응답 오류', at: this.now() })
+        if (from && this.stopped.has(from)) this.push({ k: 'note', text: '중단함', at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
+        else if (o.is_error) this.push({ k: 'note', text: '응답 오류', at: this.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
+        if (this.requestId) this.outcome = { requestId: this.requestId, status: from && this.stopped.has(from) ? 'interrupted' : o.is_error ? 'failed' : 'complete' }
+        this.requestId = null
         this.changed(true)
         this.armIdle()
       }
@@ -200,7 +213,7 @@ export class ControlRuntime {
     this.idleTimer.unref?.()
   }
 
-  send(text: string, images: ControlImage[] = [], context = ''): void {
+  send(text: string, images: ControlImage[] = [], context = '', requestId?: string): void {
     const body = text.trim()
     if (!body && images.length === 0) throw new Error('빈 메시지')
     // 한 번에 한 요청만. 겹쳐 보내면 첫 답이 끝날 때 작업 중 표시가 꺼져 버린다.
@@ -211,7 +224,9 @@ export class ControlRuntime {
       ...((body || context) ? [{ type: 'text', text: context ? `${context}\n\nCurrent user request:\n${body}` : body }] : [])
     ]
     p.stdin?.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content } })}\n`)
-    this.push({ k: 'user', text: body, at: this.now(), images: images.length })
+    this.requestId = requestId ?? null
+    this.outcome = null
+    this.push({ k: 'user', text: body, at: this.now(), images: images.length, ...(this.requestId ? { requestId: this.requestId } : {}) })
     this.busy = true
     this.since = this.now()
     this.error = null
@@ -239,6 +254,7 @@ export class ControlRuntime {
     this.live = ''
     this.busy = false
     this.error = null
+    this.outcome = null
     this.loaded = true
     this.changed(true)
   }
@@ -254,6 +270,8 @@ export class ControlRuntime {
     if (this.busy) {
       this.busy = false
       this.live = ''
+      if (this.requestId) this.outcome = { requestId: this.requestId, status: 'interrupted' }
+      this.requestId = null
       this.changed(true)
     }
     p.stdin?.end()

@@ -1,9 +1,14 @@
-// 그래프 보기(궤도): 디렉토리 → 섹션(주제, 주제가 없으면 상태) → 워크스페이스 카드를 힘 기반 배치로 그린다.
+// 그래프 보기: 디렉토리 → 주제 → 하위 주제 → 작업을 크기에 맞춰 겹치지 않게 배치한다.
 // 카드 안에 제목·요약·세션이 들어가 있어 호버하지 않아도 읽힌다. 갱신 때 기존 좌표를 이어 받아 튀지 않게 한다.
 import { t } from './i18n'
 import type { AgentView, Snapshot, WorkspaceView } from '../model'
 import type { GraphPoint } from '../graph-layout'
+import { arrangeGraphTree, graphCamera, graphRevealKeys } from '../graph-layout'
+import { sortWorkBriefs, workBrief, type WorkMemory } from '../work-memory'
 import { topicRoot } from '../model'
+import { readQuestions } from '../questions'
+import type { WorkPriority } from '../work-priority'
+import { priorityBadge } from './priority-badge'
 import { openMenu, setHoverDragging } from './overlays'
 import { burstAt, celebrate, floatAt, pop, shake } from './fx'
 import { AGENT_STATE_LABEL, agentGlyph, clip, h, icon, s, statusColor, statusLabel, topicColor } from './ui'
@@ -52,6 +57,11 @@ interface GEdge {
 }
 
 export interface GraphHooks {
+  memory?(id: string): WorkMemory | undefined
+  readOnly?():boolean
+  priority?(w:WorkspaceView):WorkPriority|null
+  editPriority?(w:WorkspaceView,anchor:HTMLElement):void
+  progress?(id:string):{count:number;history:boolean}|null
   openWorkspace(w: WorkspaceView, el?: Element): void
   focusAgent(w: WorkspaceView, a: AgentView, el?: Element): void
   hoverWorkspace(el: Element, wsId: string): void
@@ -103,8 +113,8 @@ function textWidth(text: string, size: number, weight = 650): number {
 }
 
 /** 카드에 한 줄로 보일 요약: 메모 → PR 제목 → 브랜치. */
-function recap(w: WorkspaceView): string {
-  return (w.comment || w.pr?.title || (w.branch && w.branch !== w.name ? w.branch : '')).replace(/\s+/g, ' ').trim()
+function recap(w: WorkspaceView, memory?: WorkMemory): string {
+  return (memory?.goal || w.comment || w.pr?.title || (w.branch && w.branch !== w.name ? w.branch : '')).replace(/\s+/g, ' ').trim()
 }
 
 /** 카드에 보일 세션: 살아 있는 것만, 급한 순. */
@@ -112,140 +122,21 @@ function cardSessions(w: WorkspaceView): AgentView[] {
   return w.agents.filter((a) => a.state !== 'done')
 }
 
-function cardHeight(w: WorkspaceView): number {
-  const r = recap(w)
-  const lines = r ? (textWidth(r, 11, 400) > CARD_W - 24 ? 2 : 1) : 0
+function cardHeight(w: WorkspaceView, memory?: WorkMemory,progress=false): number {
+  const r = recap(w, memory)
+  const lines = r ? 1 : 0
   const sess = cardSessions(w)
   const rows = Math.min(sess.length, 3) + (sess.length > 3 ? 0.7 : 0)
   const strip = w.terminals.length || w.agents.some((a) => a.surface === 'chat' && a.state !== 'done')
-  return 14 + 18 + lines * 15 + (rows ? 6 + rows * 23 : 0) + (strip ? 26 : 0) + 10
-}
-
-function simulate(nodes: GNode[], edges: GEdge[], ticks: number): void {
-  const n = nodes.length
-  const homes = new Map<string, GNode>()
-  for (const p of nodes) if (p.kind === 'repo') homes.set(p.repoId, p)
-  for (let t = 0; t < ticks; t++) {
-    const alpha = 0.3 * (1 - t / ticks) + 0.02
-    for (let i = 0; i < n; i++) {
-      const a = nodes[i]
-      for (let j = i + 1; j < n; j++) {
-        const b = nodes[j]
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        let d2 = dx * dx + dy * dy
-        if (d2 < 1) {
-          dx = (i % 7) - 3 || 1
-          dy = (j % 5) - 2 || 1
-          d2 = dx * dx + dy * dy
-        }
-        const d = Math.sqrt(d2)
-        // 다른 디렉토리끼리는 섹션까지 감싼 원으로 떨어뜨린다.
-        if (a.kind === 'repo' && b.kind === 'repo') {
-          const min = (a.extent ?? 60) + (b.extent ?? 60)
-          if (d < min) {
-            const f = ((min - d) / d) * 0.25
-            a.vx -= dx * f
-            a.vy -= dy * f
-            b.vx += dx * f
-            b.vy += dy * f
-          }
-          continue
-        }
-        if (a.repoId !== b.repoId || d2 > 640000) continue
-        const strength = (a.kind === 'hub' && b.kind === 'hub' ? 14000 : a.kind === 'repo' || b.kind === 'repo' ? 1200 : a.anchor !== b.anchor ? 2600 : 400) / d2
-        const fx = (dx / d) * strength * alpha
-        const fy = (dy / d) * strength * alpha
-        a.vx -= fx
-        a.vy -= fy
-        b.vx += fx
-        b.vy += fy
-      }
-    }
-    for (const e of edges) {
-      const dx = e.b.x - e.a.x
-      const dy = e.b.y - e.a.y
-      const d = Math.sqrt(dx * dx + dy * dy) || 0.01
-      const k = ((d - e.len) / d) * (e.kind === 'repo' ? 0.5 : e.kind === 'sub' ? 0.45 : 0.3) * alpha
-      const wa = e.a.kind === 'repo' ? 0.1 : 0.5
-      e.a.vx += dx * k * wa
-      e.a.vy += dy * k * wa
-      e.b.vx -= dx * k
-      e.b.vy -= dy * k
-    }
-    for (const p of nodes) {
-      if (p.fixed) { p.vx = p.vy = 0; continue }
-      // 카드는 자기 섹션 쪽으로, 섹션은 디렉토리 쪽으로 당겨 묶음이 흩어지지 않게 한다.
-      const home = p.kind === 'repo' ? { x: 0, y: 0 } : (p.anchor ?? homes.get(p.repoId) ?? { x: 0, y: 0 })
-      const pull = p.kind === 'repo' ? 0.009 : p.kind === 'hub' ? (p.off ? 0.006 : 0.03) : 0.06
-      p.vx -= (p.x - home.x) * pull * alpha
-      p.vy -= (p.y - home.y) * pull * alpha
-      const v = Math.hypot(p.vx, p.vy)
-      if (v > 30) {
-        p.vx = (p.vx / v) * 30
-        p.vy = (p.vy / v) * 30
-      }
-      if (p.kind === 'hub' && p.off) {
-        const r = homes.get(p.repoId)
-        p.x = (r?.x ?? 0) + p.off.x
-        p.y = (r?.y ?? 0) + p.off.y
-        p.vx = p.vy = 0
-        continue
-      }
-      p.x += p.vx
-      p.y += p.vy
-      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) {
-        p.x = (Math.random() - 0.5) * 50
-        p.y = (Math.random() - 0.5) * 50
-        p.vx = p.vy = 0
-      }
-      p.vx *= 0.55
-      p.vy *= 0.55
-    }
-    collide(nodes, 0.5)
-  }
-  // 마지막에 겹침이 남지 않게 충돌만 몇 번 더 푼다.
-  for (let k = 0; k < 40; k++) if (!collide(nodes, 0.6)) break
-}
-
-/** 사각형끼리 겹치면 덜 겹친 축으로 밀어낸다. 겹침이 있었으면 true. */
-function collide(nodes: GNode[], amount: number): boolean {
-  let any = false
-  const gap = 14
-  for (let i = 0; i < nodes.length; i++) {
-    const a = nodes[i]
-    for (let j = i + 1; j < nodes.length; j++) {
-      const b = nodes[j]
-      if (a.kind === 'repo' && b.kind === 'repo') continue
-      const dx = b.x - a.x
-      const dy = b.y - a.y
-      const ox = a.hw + b.hw + gap - Math.abs(dx)
-      const oy = a.hh + b.hh + gap - Math.abs(dy)
-      if (ox <= 0 || oy <= 0) continue
-      any = true
-      const still = (n: GNode) => !!n.fixed || n.kind === 'repo' || (n.kind === 'hub' && !!n.off)
-      if (still(a) && still(b)) continue
-      const wa = still(a) ? 0 : still(b) ? 1 : 0.5
-      const wb = 1 - wa
-      if (ox < oy) {
-        const m = ox * amount * (dx >= 0 ? 1 : -1)
-        a.x -= m * wa
-        b.x += m * wb
-      } else {
-        const m = oy * amount * (dy >= 0 ? 1 : -1)
-        a.y -= m * wa
-        b.y += m * wb
-      }
-    }
-  }
-  return any
+  return 14 + 18 + lines * 15 + (memory?.nextStep ? 21 : 0) + (rows ? 6 + rows * 23 : 0) + (strip ? 26 : 0) +(progress?21:0)+ 10
 }
 
 export function createGraph(hooks: GraphHooks) {
   const viewport = s('g')
+  const zoneLayer=s('g',{class:'g-zones','aria-hidden':'true'})
   const edgeLayer = s('g')
   const nodeLayer = s('g')
-  viewport.append(edgeLayer, nodeLayer)
+  viewport.append(zoneLayer,edgeLayer, nodeLayer)
   const svg = s('svg', { class: 'g' }, viewport) as SVGSVGElement
   const wrap = h('div', { class: 'graph-wrap' }, svg)
 
@@ -254,13 +145,21 @@ export function createGraph(hooks: GraphHooks) {
   let ty = 0
   let fitted = false
   let userMoved = false
+  let overviewMode = false
   let visibleKey = ''
   let positions = new Map<string, { x: number; y: number }>()
   let current: { nodes: GNode[]; snap: Snapshot } | null = null
   let lastKey = ''
+  let topology=''
+  let livePositions=new Map<string,{x:number;y:number}>()
+  let liveTopology=''
+  let liveCamera:{scale:number;tx:number;ty:number;userMoved:boolean;overviewMode:boolean}|null=null
+  let wasHistory=false
   let selected: string | null = null
   let reserve: { side: 'left' | 'right' | 'bottom'; size: number } | null = null
   let tween = 0
+  let attentionCursor: string | null = null
+  let pendingWorkspaceFocus: string | null = null
 
   function applyTransform(): void {
     if (!Number.isFinite(scale) || scale <= 0) scale = 1
@@ -268,6 +167,8 @@ export function createGraph(hooks: GraphHooks) {
     if (!Number.isFinite(ty)) ty = 0
     viewport.setAttribute('transform', `translate(${tx.toFixed(2)} ${ty.toFixed(2)}) scale(${scale.toFixed(4)})`)
     wrap.style.setProperty('--k', (1 / scale).toFixed(4))
+    wrap.dataset.scale = scale.toFixed(4)
+    wrap.dataset.camera = overviewMode ? 'overview' : 'reading'
     // 멀리서 볼 때는 카드에 제목만 크게 남긴다.
     wrap.classList.toggle('far', scale < 0.55)
     const next = Math.min(1.3, Math.max(1, 0.6 / scale))
@@ -299,13 +200,13 @@ export function createGraph(hooks: GraphHooks) {
   function freeArea(): { x: number; y: number; w: number; h: number } {
     const W = wrap.clientWidth || 380
     const H = wrap.clientHeight || 600
-    const top = 48
+    const top = Math.max(48, (bar?.offsetHeight ?? 0) + 20)
     if (!reserve) return { x: 0, y: top, w: W, h: H - top }
     return {
       x: reserve.side === 'left' ? reserve.size : 0,
       y: top,
-      w: W - (reserve.side === 'bottom' ? 0 : reserve.size),
-      h: H - top - (reserve.side === 'bottom' ? reserve.size : 0)
+      w: Math.max(1, W - (reserve.side === 'bottom' ? 0 : reserve.size)),
+      h: Math.max(1, H - top - (reserve.side === 'bottom' ? reserve.size : 0))
     }
   }
 
@@ -322,10 +223,10 @@ export function createGraph(hooks: GraphHooks) {
       maxY = Math.max(maxY, p.y + p.hh + (p.kind === 'repo' ? 20 : 0))
     }
     const a = freeArea()
-    const pad = 24
-    const ns = Math.max(0.2, Math.min((a.w - pad * 2) / (maxX - minX), (a.h - pad * 2) / (maxY - minY), 1.15))
-    const ntx = a.x + a.w / 2 - ((minX + maxX) / 2) * ns
-    const nty = a.y + a.h / 2 - ((minY + maxY) / 2) * ns
+    const preferred = sortWorkBriefs(current.nodes.filter(n => n.wsId).map(n => workBrief(current!.snap.workspaces[n.wsId!], hooks.memory?.(n.wsId!))))[0]?.workspace.id
+    const focus = selectedPoint() ?? current.nodes.find(n => n.wsId === preferred) ?? null
+    const frame = graphCamera({ minX, minY, maxX, maxY }, a, focus, overviewMode)
+    const { scale: ns, tx: ntx, ty: nty } = frame
     if (smooth) animateTo(ns, ntx, nty)
     else {
       scale = ns
@@ -336,6 +237,8 @@ export function createGraph(hooks: GraphHooks) {
   }
 
   function zoomAt(factor: number, cx: number, cy: number): void {
+    userMoved = true
+    overviewMode = false
     cancelAnimationFrame(tween)
     const next = Math.max(0.2, Math.min(3, scale * factor))
     tx = cx - ((cx - tx) * next) / scale
@@ -385,6 +288,11 @@ export function createGraph(hooks: GraphHooks) {
     { class: 'graph-tools' },
     h('button', { class: 'icon-btn', title: t('확대'), onClick: () => zoomAt(1.25, wrap.clientWidth / 2, wrap.clientHeight / 2) }, icon('zoomIn')),
     h('button', { class: 'icon-btn', title: t('축소'), onClick: () => zoomAt(0.8, wrap.clientWidth / 2, wrap.clientHeight / 2) }, icon('zoomOut')),
+    h('button', { class: 'icon-btn g-reading', title: t('카드 읽기'), onClick: () => {
+      userMoved = false
+      overviewMode = false
+      fit(true)
+    } }, icon('eye')),
     h(
       'button',
       {
@@ -392,6 +300,7 @@ export function createGraph(hooks: GraphHooks) {
         title: t('전체 보기'),
         onClick: () => {
           userMoved = false
+          overviewMode = true
           fit(true)
         }
       },
@@ -399,17 +308,19 @@ export function createGraph(hooks: GraphHooks) {
     )
   )
   const groupSeg = h('div', { class: 'seg sm' })
-  const resetPositionsBtn = h('button', { class: 'pill-btn', title: t('저장한 위치를 자동 배치로 되돌리기'), onClick: () => {
-    hooks.resetPositions()
+  const resetPositionsBtn = h('button', { class: 'pill-btn g-autolayout', title: t('그래프 자동 정리'), onClick: () => {
+    // 기록의 화면 정리는 현재 작업의 저장 위치를 변경하지 않는다.
+    if(!hooks.readOnly?.())hooks.resetPositions()
     positions.clear()
-    relayout = true
+    topology=''
     lastKey = ''
     if (current) {
       self.update(current.snap, visibleRef)
       userMoved = false
+      overviewMode = false
       fit(true)
     }
-  } }, icon('refresh'), t('자동 배치'))
+  } }, icon('refresh'), t('자동 정리'))
   const foldBtn = h('button', { class: 'pill-btn', title: t('주제 모두 접기·펼치기') })
   foldBtn.addEventListener('click', () => {
     const anyOpen = nodeEls.some((x) => x.n.kind === 'hub' && !x.n.collapsed)
@@ -437,10 +348,29 @@ export function createGraph(hooks: GraphHooks) {
     chips.forEach((c, i) => window.setTimeout(() => burstAt(c, 'var(--muted)', 6, 0.5), i * 25))
     void hooks.closeTabs(handles)
   })
-  const bar = h('div', { class: 'g-bar' }, groupSeg, foldBtn, resetPositionsBtn, sweepBtn)
+  const attentionButton = h('button', { class: 'pill-btn g-attention', title: t('다음 확인할 카드로 이동') }) as HTMLButtonElement
+  const attentionItems = () => current ? sortWorkBriefs([...visibleRef].map(id => workBrief(current!.snap.workspaces[id], hooks.memory?.(id)))).filter(brief => hooks.priority?['P0','P1'].includes(hooks.priority(brief.workspace)?.level??''):brief.lane === 'attention').sort((a,b)=>(hooks.priority?.(a.workspace)?.level??'P2').localeCompare(hooks.priority?.(b.workspace)?.level??'P2')) : []
+  attentionButton.addEventListener('click', () => {
+    if (!current) return
+    const list = attentionItems()
+    if (!list.length) return
+    const next = list[(list.findIndex(brief => brief.workspace.id === attentionCursor) + 1) % list.length]
+    attentionCursor = next.workspace.id
+    selected = `w:${attentionCursor}`
+    pendingWorkspaceFocus = attentionCursor
+    userMoved = true
+    overviewMode = false
+    lastKey = ''
+    hooks.setSectionState(graphRevealKeys(next.workspace, current.snap, hooks.groupBy()), 'all')
+    hooks.openWorkspace(next.workspace)
+  })
+  const bar = h('div', { class: 'g-bar' }, groupSeg, foldBtn, attentionButton, resetPositionsBtn, sweepBtn)
   function renderBar(): void {
-    resetPositionsBtn.hidden = !nodeEls.some(({ n }) => n.fixed)
+    const pending = attentionItems()
+    attentionButton.hidden = pending.length === 0
+    attentionButton.replaceChildren(icon('alert'), t('확인 필요 {n}', { n: pending.length }))
     const mode = hooks.groupBy()
+    sweepBtn.hidden=!!hooks.readOnly?.()
     groupSeg.replaceChildren(
       ...(
         [
@@ -467,7 +397,7 @@ export function createGraph(hooks: GraphHooks) {
     if (!sweepArmed) {
       const n = hooks.deadTabs().length
       sweepBtn.classList.remove('armed')
-      sweepBtn.hidden = n === 0
+      sweepBtn.hidden = !!hooks.readOnly?.()||n === 0
       sweepBtn.replaceChildren(icon('broom'), t(`끝난 탭 {n}`, { n }))
     }
   }
@@ -489,7 +419,7 @@ export function createGraph(hooks: GraphHooks) {
         n.y = prev.y
       }
       const positionId = n.kind === 'ws' ? n.wsId : n.kind === 'hub' ? `@group:${n.id}` : null
-      const fixed = positionId ? hooks.position(positionId) : undefined
+      const fixed = positionId && !hooks.readOnly?.() ? hooks.position(positionId) : undefined
       if (fixed) { n.x = fixed.x; n.y = fixed.y; n.fixed = true }
       nodes.push(n)
       byId.set(n.id, n)
@@ -499,7 +429,7 @@ export function createGraph(hooks: GraphHooks) {
     repos.forEach((repo, i) => {
       const angle = (i / Math.max(1, repos.length)) * Math.PI * 2
       const radius = repos.length > 1 ? 500 + repos.length * 40 : 0
-      add({ id: `r:${repo.id}`, kind: 'repo', hw: 26, hh: 26, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, vx: 0, vy: 0, label: repo.name, color: 'var(--fg)', hot: true, repoId: repo.id })
+      add({ id: `r:${repo.id}`, kind: 'repo', hw: Math.max(36, textWidth(repo.name, 12) / 2), hh: 56, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, vx: 0, vy: 0, label: repo.name, color: 'var(--fg)', hot: true, repoId: repo.id })
     })
     for (const repo of repos) {
       const hub = byId.get(`r:${repo.id}`)!
@@ -678,7 +608,7 @@ export function createGraph(hooks: GraphHooks) {
         const angle = out + (rand() - 0.5) * 1.6
         const siblings = members.get(keyOf(w))?.length ?? 1
         const len = parent ? 110 : sec.hw + CARD_W / 2 + 4 + Math.sqrt(siblings) * 6
-        const hh = cardHeight(w) / 2
+        const hh = cardHeight(w, hooks.readOnly?.()?undefined:hooks.memory?.(w.id),!!hooks.progress?.(w.id)) / 2
         const live = cardSessions(w)
         const node = add({
           id: `w:${id}`,
@@ -708,6 +638,7 @@ export function createGraph(hooks: GraphHooks) {
     ref.addEventListener('pointerdown', (ev) => ev.stopPropagation())
     ref.addEventListener('click', (ev) => {
       ev.stopPropagation()
+      if(hooks.readOnly?.())return
       hooks.sendToControl(w, a, ref)
     })
     const row = h(
@@ -759,7 +690,9 @@ export function createGraph(hooks: GraphHooks) {
   }
 
   function card(p: GNode, w: WorkspaceView): HTMLElement {
-    const r = recap(w)
+    const memory = hooks.readOnly?.()?undefined:hooks.memory?.(w.id)
+    const brief = workBrief(w, memory)
+    const r = recap(w, memory)
     const sess = cardSessions(w)
     const plus = h('button', { class: 'gc-add', title: t('세션 추가') }, icon('plus'))
     plus.addEventListener('click', (ev) => {
@@ -769,15 +702,17 @@ export function createGraph(hooks: GraphHooks) {
     const state = sess.some((a) => a.state === 'blocked') ? 'blocked' : sess.some((a) => a.state === 'waiting') ? 'waiting' : sess.some((a) => a.state === 'working') ? 'working' : ''
     const el = h(
       'div',
-      { class: `gc${w.unread ? ' unread' : ''}`, 'data-attn': state, style: { '--c': p.color } },
+      { class: `gc${brief.changed ? ' unread' : ''}`, 'data-work': w.id, tabindex: '0', 'data-attn': state,'data-attention':String(sess.some(a=>a.state==='blocked'||a.state==='waiting'&&a.tool?.name==='AskUserQuestion'&&readQuestions(a.tool.input).length)),'data-progress':String(!!hooks.progress?.(w.id)), style: { '--c': p.color } },
       h(
         'div',
         { class: 'gc-head' },
+        !hooks.readOnly?.()&&hooks.priority?.(w)?priorityBadge(hooks.priority(w)!,anchor=>hooks.editPriority?.(w,anchor)):null,
         h('span', { class: 'gc-title' }, w.name),
         w.pr ? h('span', { class: 'gc-pr', 'data-state': w.pr.state }, `#${w.pr.number}`) : null,
         plus
       ),
       r ? h('div', { class: 'gc-recap', title: r }, clip(r, 120)) : null,
+      memory?.nextStep ? h('div', { class: 'gc-next', title: t('다음 행동: {text}', { text: memory.nextStep }) }, icon('chevron'), h('span', null, memory.nextStep)) : null,
       sess.length
         ? h(
             'div',
@@ -788,6 +723,9 @@ export function createGraph(hooks: GraphHooks) {
         : null,
       tabStrip(w)
     )
+    const progress=hooks.progress?.(w.id)
+    if(progress)el.append(h('div',{class:'gc-progress'},icon('check'),h('span',null,t('기록 {n}건',{n:progress.count}))))
+    if(hooks.readOnly?.()) {plus.toggleAttribute('disabled',true);el.querySelectorAll<HTMLElement>('.gc-ref').forEach(ref=>ref.hidden=true)}
     return el
   }
 
@@ -799,7 +737,6 @@ export function createGraph(hooks: GraphHooks) {
   let dragging: GNode | null = null
   let suppressClick = false
   let visibleRef = new Set<string>()
-  let relayout = false
   let pendingUpdate: { snap: Snapshot; visible: Set<string> } | null = null
 
   const curve = (a: { x: number; y: number }, b: { x: number; y: number }) => {
@@ -861,6 +798,11 @@ export function createGraph(hooks: GraphHooks) {
       path: s('path', { class: `g-edge ${e.kind}${e.live ? ' live' : ''}`, stroke: e.kind === 'repo' ? e.b.color : undefined })
     }))
     edgeLayer.replaceChildren(...edgeEls.map((x) => x.path))
+    zoneLayer.replaceChildren(...nodes.filter(n=>n.kind==='hub'&&!n.sub&&!n.collapsed).map(hub=>{
+      const members=nodes.filter(node=>{let cur:GNode|undefined=node;const seen=new Set<string>();while(cur&&!seen.has(cur.id)){if(cur===hub)return true;seen.add(cur.id);cur=cur.anchor}return false})
+      const x=Math.min(...members.map(n=>n.x-n.hw))-14,y=Math.min(...members.map(n=>n.y-n.hh))-14
+      return s('rect',{x,y,width:Math.max(...members.map(n=>n.x+n.hw))-x+14,height:Math.max(...members.map(n=>n.y+n.hh))-y+14,rx:16,fill:hub.color,'fill-opacity':.025,stroke:hub.color,'stroke-opacity':.1})
+    }))
     nodeEls = []
     for (const p of nodes) {
       const g = s('g', { class: `g-node g-${p.kind}`, 'data-lod': p.kind === 'hub' || p.kind === 'repo' ? '1' : undefined })
@@ -891,7 +833,7 @@ export function createGraph(hooks: GraphHooks) {
           h('span', { class: 'gh-n' }, p.count ?? 0)
         )
         if (p.topicId !== undefined) {
-          const add = h('button', { class: 'gh-add', title: p.topicId ? t('새 워크스페이스 · 하위 주제') : t('여기에 새 워크스페이스') }, icon('plus'))
+          const add = h('button', { class: 'gh-add',disabled:!!hooks.readOnly?.(), title: p.topicId ? t('새 워크스페이스 · 하위 주제') : t('여기에 새 워크스페이스') }, icon('plus'))
           add.addEventListener('click', (ev) => {
             ev.stopPropagation()
             if (!p.topicId) return hooks.addSession(p.repoId, null, add)
@@ -927,8 +869,15 @@ export function createGraph(hooks: GraphHooks) {
         c.addEventListener('click', () => {
           if (!suppressClick) hooks.openWorkspace(w, c)
         })
+        c.addEventListener('keydown', ev => {
+          if (ev.target === c && (ev.key === 'Enter' || ev.key === ' ')) {
+            ev.preventDefault()
+            hooks.openWorkspace(w, c)
+          }
+        })
         c.addEventListener('contextmenu', (ev) => {
           ev.preventDefault()
+          if(hooks.readOnly?.())return
           hooks.menuWorkspace({ x: ev.clientX, y: ev.clientY }, w, c)
         })
         c.addEventListener('pointerdown', (ev) => startDrag(ev, p, w, g))
@@ -950,6 +899,7 @@ export function createGraph(hooks: GraphHooks) {
 
   /** 빈 곳에 놓으면 위치를 보관하고, 섹션 위에 직접 놓으면 소속을 바꾼다. */
   function startDrag(ev: PointerEvent, n: GNode, w: WorkspaceView | null, g: SVGElement): void {
+    if(hooks.readOnly?.())return
     if (ev.button !== 0 || (ev.target as Element).closest('button, .gc-add') || !current) return
     const sx = ev.clientX
     const sy = ev.clientY
@@ -1067,7 +1017,6 @@ export function createGraph(hooks: GraphHooks) {
       if (byTopic) live.topic = sec === '_' ? null : sec
       else live.status = sec
       positions.set(n.id, at)
-      relayout = true
       lastKey = ''
       self.update(base, visibleRef)
       void hooks.moveToSection(w, byTopic ? { topicId: sec, label: to.label } : { status: sec, label: to.label }).catch(() => {
@@ -1122,7 +1071,7 @@ export function createGraph(hooks: GraphHooks) {
     requestAnimationFrame(step)
   }
 
-  /** 섹션과 그 카드가 남은 공간에 들어오도록 카메라를 옮긴다(확대는 1배까지). */
+  /** 섹션 가운데로 이동하되 카드 읽기 배율을 유지한다. */
   function focusSection(id: string): void {
     const hubNode = current?.nodes.find((n) => n.id === id)
     if (!hubNode) return
@@ -1138,8 +1087,9 @@ export function createGraph(hooks: GraphHooks) {
       maxY = Math.max(maxY, p.y + p.hh)
     }
     const a = freeArea()
-    const ns = Math.max(scale, Math.min((a.w - 80) / (maxX - minX), (a.h - 80) / (maxY - minY), 1))
+    const ns = Math.max(scale, 1)
     userMoved = true
+    overviewMode = false
     animateTo(ns, a.x + a.w / 2 - ((minX + maxX) / 2) * ns, a.y + a.h / 2 - ((minY + maxY) / 2) * ns)
   }
 
@@ -1209,14 +1159,24 @@ export function createGraph(hooks: GraphHooks) {
     return n ? { x: n.x, y: n.y } : null
   }
 
-  new ResizeObserver(() => {
-    if (current && !userMoved && !reserve && wrap.clientWidth > 0) fit()
-  }).observe(wrap)
+  const cameraObserver = new ResizeObserver(() => {
+    if (current && !userMoved && wrap.clientWidth > 0) fit()
+  })
+  cameraObserver.observe(wrap)
+  cameraObserver.observe(bar)
 
   const self = {
     el: wrap,
     fit,
     update(snap: Snapshot, visible: Set<string>): void {
+      const history=!!hooks.readOnly?.()
+      wrap.dataset.history=String(history)
+      if(history&&!wasHistory){
+        livePositions=new Map(positions);liveTopology=topology;liveCamera={scale,tx,ty,userMoved,overviewMode}
+        positions=new Map();topology='';userMoved=false;overviewMode=false;fitted=false
+      }
+      if(!history&&wasHistory){positions=new Map(livePositions);topology=liveTopology;if(liveCamera){({scale,tx,ty,userMoved,overviewMode}=liveCamera);applyTransform()}}
+      wasHistory=history
       // 카드를 끄는 중에는 다시 그리지 않고 미뤄 둔다(놓을 때 적용).
       if (dragging) {
         pendingUpdate = { snap, visible }
@@ -1224,12 +1184,14 @@ export function createGraph(hooks: GraphHooks) {
       }
       visibleRef = visible
       const key = JSON.stringify([
+        history,
         hooks.scopeRepo(),
         hooks.groupBy(),
-        snap.repos.map((r) => r.topics.map((t) => t.id + t.name)),
+        snap.repos.map((r) => r.topics.map((t) => [t.id, t.name, t.parent])),
         [...visible].sort().map((id) => {
           const w = snap.workspaces[id]
-          return [id, w.name, w.status, w.topic, w.parentId, w.unread, w.comment, w.pr?.number, w.pr?.state, w.pr?.title, w.agents.map((a) => [a.key, a.state, a.title, a.tool?.name]), w.terminals.map((t) => [t.handle, t.connected, t.kind])]
+          const memory = hooks.memory?.(id)
+          return [id, w.name, w.status, w.topic, w.parentId,hooks.priority?.(w),hooks.progress?.(id), workBrief(w, memory).changed, memory?.goal, memory?.nextStep, w.comment, w.pr?.number, w.pr?.state, w.pr?.title, w.pr?.checks, w.agents.map((a) => [a.key, a.state, a.title, a.tool?.name,a.tool?.name==='AskUserQuestion'?a.tool.input:null]), w.terminals.map((t) => [t.handle, t.connected, t.kind])]
         })
       ])
       if (key === lastKey && current) {
@@ -1242,13 +1204,24 @@ export function createGraph(hooks: GraphHooks) {
       const prevStatus = wsStatus
       wsStatus = new Map(Object.values(snap.workspaces).map((w) => [w.id, w.status] as const))
       const { nodes, edges } = build(snap, visible)
-      const fresh = nodes.filter((n) => !positions.has(n.id)).length
-      simulate(nodes, edges, positions.size === 0 ? 360 : fresh > 0 || relayout ? 160 : 30)
-      relayout = false
+      const nextTopology=JSON.stringify(nodes.map(n=>[n.id,n.anchor?.id]))
+      const arranged = arrangeGraphTree(nodes.map(n => ({id:n.id,parentId:n.anchor?.id,hw:n.hw+8,hh:n.hh+8,
+        ...(n.fixed ? {fixed:{x:n.x,y:n.y}} : nextTopology===topology&&positions.has(n.id)?{fixed:positions.get(n.id)}:{})})))
+      topology=nextTopology
+      for (const node of nodes) Object.assign(node, arranged.get(node.id), {vx:0,vy:0})
       positions = new Map(nodes.map((n) => [n.id, { x: n.x, y: n.y }]))
       current = { nodes, snap }
       draw(snap, nodes, edges)
-      if (prevStates.size) window.setTimeout(() => react(snap, prevStates, prevStatus), 600)
+      if (pendingWorkspaceFocus) {
+        const node = nodes.find(n => n.wsId === pendingWorkspaceFocus)
+        pendingWorkspaceFocus = null
+        if (node) {
+          const area = freeArea()
+          const zoom = Math.min(1.15, Math.max(1, scale))
+          animateTo(zoom, area.x + area.w / 2 - node.x * zoom, area.y + area.h / 2 - node.y * zoom)
+        }
+      }
+      if (prevStates.size&&!history) window.setTimeout(() => {if(!hooks.readOnly?.())react(snap, prevStates, prevStatus)}, 600)
       if (pendingFocus) {
         const id = pendingFocus
         pendingFocus = null
@@ -1269,11 +1242,21 @@ export function createGraph(hooks: GraphHooks) {
       }
     },
     select(sel: { wsId: string; agentKey: string | null } | null): void {
+      const previous = selected
       selected = sel ? (sel.agentKey ? `s:${sel.agentKey}` : `w:${sel.wsId}`) : null
+      if (sel) overviewMode = false
       markSelected()
+      if (sel && selected !== previous && reserve && !userMoved && wrap.clientWidth > 0) fit(true)
+    },
+    revealWorkspace(id:string):void {
+      const w=current?.snap.workspaces[id]
+      if(!current||!w)return
+      pendingWorkspaceFocus=id;userMoved=true;overviewMode=false;lastKey=''
+      hooks.setSectionState(graphRevealKeys(w,current.snap,hooks.groupBy()),'all')
     },
     /** 작업 창이 열리고 닫힐 때 남은 공간으로 비켜난다. */
     setReserve(next: { side: 'left' | 'right' | 'bottom'; size: number } | null): void {
+      for (const side of ['left', 'right', 'bottom'] as const) wrap.style.setProperty(`--graph-reserve-${side}`, `${next?.side === side ? next.size : 0}px`)
       const same = JSON.stringify(next) === JSON.stringify(reserve)
       reserve = next
       if (same || wrap.clientWidth === 0) return
@@ -1281,6 +1264,8 @@ export function createGraph(hooks: GraphHooks) {
         if (!userMoved) fit(true)
         return
       }
+      // 자동 보기의 최소 읽기 배율을 지킨다. 직접 확대/이동한 뒤에는 사용자의 배율을 유지한다.
+      if (!userMoved) return fit(true)
       const pt = selectedPoint()
       if (!pt) return fit(true)
       const a = freeArea()
@@ -1288,6 +1273,7 @@ export function createGraph(hooks: GraphHooks) {
     },
     resetView(): void {
       userMoved = false
+      overviewMode = false
       lastKey = ''
     }
   }

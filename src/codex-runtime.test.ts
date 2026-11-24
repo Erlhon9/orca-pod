@@ -133,3 +133,21 @@ test('이어 가기 실패는 새 대화로 자동 재전송하지 않는다', a
     assert.equal(rt.view().error, 'Codex 관제를 시작하지 못했습니다')
   } finally { rt.shutdown() }
 })
+
+test('Codex 요청의 사용자·도구·응답 항목에는 같은 요청 식별자를 남긴다', async () => {
+  const { rt, event } = setup()
+  try {
+    await rt.send('조회', [], '', 'control-2')
+    assert.equal(rt.view().requestId, 'control-2')
+    event('item/tool/call', { threadId: 'codex-thread', tool: 'pod_sessions', arguments: {} }, 91)
+    await new Promise(resolve => setImmediate(resolve))
+    event('item/completed', { threadId: 'codex-thread', item: { type: 'dynamicToolCall', id: 'tool-1', tool: 'pod_sessions', arguments: {}, status: 'completed' } })
+    event('item/completed', { threadId: 'codex-thread', item: { type: 'agentMessage', text: '확인함' } })
+    event('turn/completed', { threadId: 'codex-thread', turn: { status: 'completed' } })
+    const v = rt.view()
+    assert.equal(v.requestId, null)
+    assert.deepEqual(v.outcome, { requestId: 'control-2', status: 'complete' })
+    assert.ok(v.items.some(item => item.k === 'note' && item.text.startsWith('Tool receipt:')))
+    assert.ok(v.items.every(item => item.requestId === 'control-2'))
+  } finally { rt.shutdown() }
+})

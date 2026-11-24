@@ -1,7 +1,7 @@
 // Pod 워커. 화면(패널)의 요청을 받아 orca CLI 와 호스트 API 로 데이터를 모으고 조작을 실행한다.
 // 셸을 거치지 않고 execFile 로 인자 배열을 넘기므로 입력값이 명령으로 해석되지 않는다.
 import { execFile, spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
@@ -14,9 +14,16 @@ import { createControlBridge, type ControlBridge } from './control-bridge'
 import { TerminalControlRuntime, terminalControlPrompt, controlLaunchResult, controlScreenLines } from './terminal-control'
 import { CONTROL_AGENTS, controlAgentLabel } from './control-agents'
 import { controlHandoff, mergeControlHistory, visibleControlItem } from './control-handoff'
+import { CONTROL_TURNS_KEY, prepareControlRequest, readControlTurns, scopeKey, type ControlTurn } from './control-turns'
 import { isControlProvider, relayTool, type ControlProvider } from './relay'
 import type { ChatItem } from './transcript'
+import { applyTopicPlan, parseTopicPlan, topicPlanFingerprint, type TopicPlan } from './topic-plan'
+import { topicPlanPrompt } from './topic-prompt'
+import { WATCH_KEY, emptyWatch, readWatchState, readWatchSettings, watchContext, watchDecision, watchPrompt, type WatchState, type WatchContext } from './control-watch'
+import { WORK_JOURNAL_KEY, readWorkJournal } from './work-memory'
 import { normalize, type Snapshot, type Topic, type TopicSet } from './model'
+import { ProgressRepository } from './progress'
+import { PriorityRepository, priorityChange } from './work-priority'
 
 const CLI_CANDIDATES = [process.env.ORCA_CLI, '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(
   (p): p is string => typeof p === 'string' && p.length > 0
@@ -224,26 +231,10 @@ export function mergeSuggested(prev: TopicSet | undefined, fresh: Topic[], assig
   return { topics, assign: next, generatedAt: Date.now() }
 }
 
-const SUGGEST_SCHEMA = JSON.stringify({
-  type: 'object',
-  properties: {
-    topics: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { name: { type: 'string' }, keywords: { type: 'array', items: { type: 'string' } } },
-        required: ['name', 'keywords']
-      }
-    },
-    assignments: {
-      type: 'array',
-      items: { type: 'object', properties: { i: { type: 'integer' }, topic: { type: 'string' } }, required: ['i', 'topic'] }
-    }
-  },
-  required: ['topics', 'assignments']
-})
-
 export default function activate(orca: any): void {
+  const progress=new ProgressRepository(orca.storage)
+  const priorities=new PriorityRepository(orca.storage)
+  let progressError:string|null=null
   let cache: { at: number; snapshot: Snapshot } | null = null
   let inflight: Promise<Snapshot> | null = null
   let idsByPath = new Map<string, string>()
@@ -271,10 +262,10 @@ export default function activate(orca: any): void {
 
   /** 주제 저장은 한 줄로 세워 차례로 한다(읽고 고치고 쓰는 사이에 다른 저장이 끼지 않게). */
   let topicQueue: Promise<unknown> = Promise.resolve()
-  function editTopicSet(repoId: string, edit: (prev: TopicSet | undefined) => TopicSet | null): Promise<void> {
+  function editTopicSet(repoId: string, edit: (prev: TopicSet | undefined) => TopicSet | null | Promise<TopicSet | null>): Promise<void> {
     const run = topicQueue.then(async () => {
       const all = await topicSets()
-      const next = edit(all[repoId])
+      const next = await edit(all[repoId])
       if (next) all[repoId] = next
       else delete all[repoId]
       await orca.storage.set(TOPICS_KEY, all)
@@ -299,6 +290,10 @@ export default function activate(orca: any): void {
       topicSets().catch(() => ({}) as Record<string, TopicSet>)
     ])
     const snap = normalize(ps, terminals, ids, Date.now(), topics)
+    try {
+      if(await progress.observe(snap))orca.panels.post('pod.progress.changed',{})
+      progressError=null
+    } catch(error) {progressError=userMessage(String((error as Error).message));orca.log('작업 기록 저장 실패')}
     // 관제 세션이 있으면 세션 지도를 갱신한다(바뀌었을 때만 쓴다).
     if (controlOn) void writeControlMap(CONTROL_DIR, snap, controlSelf).catch(() => {})
     return snap
@@ -375,13 +370,75 @@ export default function activate(orca: any): void {
   let controlEpoch = 0
   let sharedHistory: ChatItem[] = []
   let pendingHandoff = ''
-  const withProvider = (v: ControlView, selected = provider) => ({ ...v, items: mergeControlHistory(sharedHistory, v.items), provider: selected })
+  let turns: ControlTurn[] = []
+  let turnsLoaded = false
+  let activeTurn: ControlTurn | null = null
+  let savingTurns = Promise.resolve()
+  let turnSaveFailed = false
+  let topicPlan: TopicPlan | null = null
+  let topicError: string | null = null
+  let topicSource: {requestId:string;snapshot:Snapshot;repoId:string} | null = null
+  let watchState=emptyWatch()
+  let watchInit:Promise<void>|null=null
+  let watchWrites:Promise<unknown>=Promise.resolve()
+  let watchPending=false
+  let watchSaving=false
+  let watchError:string|null=null
+  let watchSource:{requestId:string;context:WatchContext}|null=null
+  const watchScanned=new Map<string,number>()
+  const loadWatch=()=>watchInit??=(async()=>{watchState=readWatchState(await orca.storage.get(WATCH_KEY))})().catch(error=>{watchInit=null;throw error})
+  const editWatch=(edit:(next:WatchState)=>void):Promise<void>=>{
+    const write=watchWrites.catch(()=>{}).then(async()=>{
+      await loadWatch()
+      const next=structuredClone(watchState)
+      edit(next)
+      next.notes=next.notes.slice(-12)
+      next.checkpoints=Object.fromEntries(Object.entries(next.checkpoints).sort((a,b)=>Math.max(a[1].lastAttempt,a[1].lastCheck)-Math.max(b[1].lastAttempt,b[1].lastCheck)).slice(-100))
+      await orca.storage.set(WATCH_KEY,next)
+      watchState=next
+    })
+    watchWrites=write
+    return write
+  }
+  const TOPIC_PLAN_KEY = 'pod.topic-plan.v1'
+  const withProvider = (v: ControlView, selected = provider) => {
+    const latest = [...turns].reverse().find(turn => turn.kind === 'briefing' && turn.status === 'complete' && turn.answer)
+    const items=mergeControlHistory(sharedHistory,v.items).filter(item=>{
+      if(turns.some(turn=>turn.id===item.requestId && turn.kind==='watch')) item.controlKind='watch'
+      return item.controlKind!=='watch'
+    })
+    return { ...v, items, provider: selected, watch:{settings:watchState.settings,configuredAt:watchState.configuredAt,notes:watchState.notes,error:watchError,saving:watchSaving},
+      // 과거 브리핑 본문을 스트리밍 조각마다 모두 전송하지 않는다. 이전 작업은 개별 캐시로 조회한다.
+      turns: turns.map(turn => ({ ...turn, text: '', answer: turn.id === latest?.id ? turn.answer : '' })), memoryError: turnSaveFailed, topicPlan, topicError }
+  }
+  const briefingKey = (targets: ControlTurn['targets']) => `pod.briefing.v1.${createHash('sha256').update(scopeKey(targets)).digest('hex')}`
+  const saveTurns = (briefing?: ControlTurn): Promise<void> => {
+    const value = turns.slice(-80).map(turn => ({ ...turn, targets: [...turn.targets] }))
+    const savedBriefing = briefing ? { ...briefing, targets: [...briefing.targets] } : null
+    const write = savingTurns.catch(() => {}).then(async () => {
+      await orca.storage.set(CONTROL_TURNS_KEY, value)
+      if (savedBriefing?.answer) await orca.storage.set(briefingKey(savedBriefing.targets), savedBriefing)
+      const wasFailed = turnSaveFailed
+      turnSaveFailed = false
+      if (wasFailed && runtime) orca.panels.post('pod.control.view', withProvider(runtime.view()))
+    })
+    savingTurns = write
+    void write.catch(() => { turnSaveFailed = true; orca.log('관제 브리핑 보관 실패'); if (runtime) orca.panels.post('pod.control.view', withProvider(runtime.view())) })
+    return write
+  }
   function control(): Promise<ControlEngine> {
     if (runtime) return Promise.resolve(runtime)
     controlInit ??= makeControl().finally(() => (controlInit = null))
     return controlInit
   }
   async function makeControl(): Promise<ControlEngine> {
+    await loadWatch()
+    if (!turnsLoaded) {
+      turns = readControlTurns(await orca.storage.get(CONTROL_TURNS_KEY))
+      const saved = await orca.storage.get(TOPIC_PLAN_KEY)
+      topicPlan = saved && typeof saved.repoId === 'string' && Array.isArray(saved.topics) && Array.isArray(saved.assignments) ? saved as TopicPlan : null
+      turnsLoaded = true
+    }
     const preferred = await orca.storage.get(CONTROL_PROVIDER_KEY).catch(() => null)
     provider = isControlProvider(preferred) ? preferred : 'claude'
     const selected = provider
@@ -418,7 +475,36 @@ export default function activate(orca: any): void {
     const env = { ...process.env, USER: process.env.USER ?? userInfo().username, LOGNAME: process.env.LOGNAME ?? userInfo().username, ELECTRON_RUN_AS_NODE: undefined }
     const emit = (view: ControlView) => {
       if (provider !== selected) return
-      if (!view.busy) { history = view.items; save() }
+      if (activeTurn?.provider === selected && activeTurn.status === 'running' && view.outcome?.requestId === activeTurn.id) {
+        const own = view.items.filter(item => item.requestId === activeTurn!.id)
+        activeTurn.status = view.outcome.status
+        activeTurn.endedAt = Date.now()
+        if (activeTurn.status === 'complete' && (selected === 'claude' || selected === 'codex')) {
+          const answer = [...own].reverse().find(item => item.k === 'text')
+          if (activeTurn.kind === 'topics' && topicSource?.requestId === activeTurn.id) {
+            try {
+              topicPlan = parseTopicPlan(answer?.k === 'text' ? answer.text : '', topicSource.snapshot, topicSource.repoId)
+              topicError = null
+              void orca.storage.set(TOPIC_PLAN_KEY, topicPlan).catch(() => { topicError = '분류안을 보관하지 못했습니다'; if (runtime) orca.panels.post('pod.control.view', withProvider(runtime.view())) })
+            } catch (error) { topicPlan = null; topicError = userMessage(String((error as Error).message)) }
+            topicSource = null
+          } else if(activeTurn.kind==='watch' && watchSource?.requestId===activeTurn.id) {
+            const source=watchSource, id=activeTurn.id, at=activeTurn.endedAt!, body=answer?.k==='text'?answer.text.trim():''
+            watchSource=null
+            if(body) {
+              watchSaving=true
+                void editWatch(next=>{
+                const prior=next.checkpoints[source.context.key]
+                next.notes.push({id,scopeKey:source.context.key,label:source.context.label,answer:body.slice(0,12000),at,fingerprint:source.context.fingerprint,workspaceIds:source.context.workspaces.map(w=>w.id)})
+                next.checkpoints[source.context.key]={fingerprint:source.context.fingerprint,signals:source.context.signals,lastAttempt:prior?.lastAttempt??at,lastSuccess:at,lastCheck:at}
+              }).then(()=>{watchError=null}).catch(()=>{watchError='브리핑을 보관하지 못했습니다'}).finally(()=>{watchSaving=false;if(runtime)orca.panels.post('pod.control.view',withProvider(runtime.view()))})
+            } else watchError='브리핑 응답이 비어 있습니다'
+          } else activeTurn.answer = answer?.k === 'text' ? answer.text.slice(0, 24_000) : ''
+        }
+        if(activeTurn.kind==='watch' && activeTurn.status!=='complete') {watchSource=null;watchError=view.error??'브리핑이 중단됐습니다'}
+        saveTurns(activeTurn.kind === 'briefing' && activeTurn.status === 'complete' ? activeTurn : undefined)
+      }
+      history = view.items; save()
       orca.panels.post('pod.control.view', withProvider(view, selected))
     }
     const saveSession = (id: string | null) => { sessionId = id; save() }
@@ -426,11 +512,24 @@ export default function activate(orca: any): void {
     let relayEnabled = selected !== 'claude'
     const epoch = controlEpoch
     const assertCurrent = () => { if (controlEpoch !== epoch || provider !== selected || controlRuntime !== rt) throw new Error('Control is no longer active') }
-    const callRelay = (name: string, input: unknown, active: () => boolean = () => true) => relayTool({
-      active: () => relayEnabled && active() && rt.view().busy && controlEpoch === epoch && provider === selected && controlRuntime === rt,
-      snapshot: async () => { assertCurrent(); const value = await snapshot(0); assertCurrent(); return value },
+    const callRelay = (name: string, input: unknown, active: () => boolean = () => true) => {
+      const requestId = activeTurn?.id
+      return relayTool({
+      readOnly: activeTurn?.kind === 'briefing' || activeTurn?.kind === 'topics' || activeTurn?.kind === 'watch',
+      active: () => relayEnabled && active() && rt.view().busy && controlEpoch === epoch && provider === selected && controlRuntime === rt && activeTurn?.id === requestId,
+      snapshot: async () => {
+        assertCurrent();const value=await snapshot(0);assertCurrent()
+        const source=watchSource
+        if(activeTurn?.kind==='watch') {
+          if(!source || source.requestId!==requestId) throw new Error('관제 브리핑이 종료됐습니다')
+          const context=watchContext(value,source.context.scope)
+          return {...value,workspaces:Object.fromEntries(context.workspaces.map(w=>[w.id,w]))}
+        }
+        return value
+      },
       cli: args => { assertCurrent(); return runCli(args) }
     }, name, input)
+    }
     await controlBridge?.close()
     controlBridge = null
     if (selected === 'claude') controlBridge = await createControlBridge(callRelay)
@@ -458,7 +557,9 @@ export default function activate(orca: any): void {
           save()
           return child
         },
-        emit, saveSession, onStop: () => { relayEnabled = false; bridge.revokeSessions() }, history: async id => (await readSession(id, cwd)).items.map(visibleControlItem)
+        emit, saveSession, onStop: () => { relayEnabled = false; bridge.revokeSessions() },
+        // 저장된 표시 기록에는 공급자 transcript에 없는 requestId가 있다. 재개 시 이를 버리지 않는다.
+        history: async id => history.length ? history : (await readSession(id, cwd)).items.map(visibleControlItem)
       }, session)
     } else {
       const owner = () => { if (!home) throw new CliError('관제를 실행할 워크스페이스가 없습니다'); return home }
@@ -522,6 +623,11 @@ export default function activate(orca: any): void {
     return { opened: true }
   })
   orca.panels.handle('pod.control.view', async () => withProvider((await control()).view()))
+  orca.panels.handle('pod.control.briefing', async (input: { targets?: unknown }) => {
+    const prepared = prepareControlRequest(await snapshot(), '', { targets: input?.targets, kind: 'briefing' })
+    const saved = readControlTurns([await orca.storage.get(briefingKey(prepared.targets))])[0]
+    return saved?.status === 'complete' && saved.kind === 'briefing' && scopeKey(saved.targets) === scopeKey(prepared.targets) ? saved : null
+  })
   orca.panels.handle('pod.control.provider', async (input: { provider?: unknown }) => {
     if (!isControlProvider(input?.provider)) throw new CliError('지원하지 않는 관제 에이전트입니다')
     if (selecting) throw new CliError('관제 에이전트를 변경하는 중입니다')
@@ -531,7 +637,8 @@ export default function activate(orca: any): void {
       if (provider !== input.provider) {
         const before = rt.view()
         const from = provider
-        const nextHistory = mergeControlHistory(sharedHistory, before.items, before.live ? [{ k: 'note', text: `미완료 응답 (${from}): ${before.live}`, at: Date.now() }] : [])
+        const nextHistory = mergeControlHistory(sharedHistory, before.items, before.live ? [{ k: 'note', text: `미완료 응답 (${from}): ${before.live}`, at: Date.now(), ...(before.requestId ? { requestId: before.requestId } : {}) }] : [])
+        if (activeTurn?.status === 'running') { activeTurn.status = 'interrupted'; activeTurn.endedAt = Date.now(); saveTurns() }
         nextHistory.push({ k: 'note', text: `관제 전환: ${controlAgentLabel(from)} → ${controlAgentLabel(input.provider)}`, at: Date.now() })
         // 전환 자체는 이전 공급자를 호출하지 않는다. 사용량 한도 오류·응답 중에도 바꿀 수 있다.
         await orca.storage.set(CONTROL_HANDOFF_KEY, { items: nextHistory, to: input.provider, pending: true })
@@ -549,7 +656,7 @@ export default function activate(orca: any): void {
       return view
     } finally { selecting = false }
   })
-  orca.panels.handle('pod.control.send', async (input: { text?: string; images?: unknown }) => {
+  const sendControl = async (input: { text?: string; images?: unknown; scope?: unknown }) => {
     const raw: any[] = Array.isArray(input?.images) ? input.images : []
     if (raw.length > 6) throw new CliError('사진은 6장까지 보낼 수 있습니다')
     const images: ControlImage[] = raw.map((im: any) => {
@@ -559,7 +666,7 @@ export default function activate(orca: any): void {
       if (im.data.length > Math.ceil((CONTROL_IMAGE_MAX * 4) / 3) + 4) throw new CliError('사진은 장당 5MB 까지 보낼 수 있습니다')
       return { type: String(im.type), data: im.data }
     })
-    const body = typeof input?.text === 'string' ? input.text.slice(0, 20_000) : ''
+    const body = typeof input?.text === 'string' ? input.text : ''
     if (!body.trim() && images.length === 0) throw new CliError('메시지 값이 비어 있습니다')
     if (selecting) throw new CliError('관제 에이전트를 변경하는 중입니다')
     if (sendingControl) throw new CliError('관제가 답하는 중입니다')
@@ -567,28 +674,97 @@ export default function activate(orca: any): void {
     const epoch = controlEpoch
     try {
       const rt = await control()
+      if (rt.view().busy) throw new CliError('관제가 답하는 중입니다')
       // 오래된 지도로는 보내지 않는다. 갱신 실패는 이번 요청의 실패로 알린다.
-      await writeControlMap(CONTROL_DIR, await snapshot(0), controlSelf)
+      const current = await snapshot(0)
+      await writeControlMap(CONTROL_DIR, current, controlSelf)
+      const scope = input.scope as any
+      const isTopics = scope?.kind === 'topics'
+      const isWatch = scope?.kind === 'watch'
+      const watchJournal=isWatch?readWorkJournal(await orca.storage.get(WORK_JOURNAL_KEY)):{}
+      const context=isWatch?watchContext(current,scope.watchScope,watchJournal):null
+      const priorityState=isWatch?await priorities.view():{}
+      const repoId = isTopics ? text(scope.repoId, 'repoId', 200) : ''
+      const prepared = context ? {targets:[],label:context.label,text:watchPrompt(context,watchJournal,[...watchState.notes].reverse().find(note=>note.scopeKey===context.key),scope.watchLanguage==='en'?'en':'ko',priorityState),displayText:body,kind:'watch' as const,sourceVersion:context.fingerprint} : isTopics ? {targets:[],label:current.repos.find(r => r.id === repoId)?.name ?? repoId,text:topicPlanPrompt(current,repoId),displayText:body,kind:'topics' as const,sourceVersion:topicPlanFingerprint(current,repoId),topicRepoId:repoId} : prepareControlRequest(current, body, input.scope)
+      if(!isTopics&&(!context||context.workspaces.length)) {
+        try {prepared.text+=await progress.context(context?context.workspaces.map(w=>w.id):prepared.targets.map(t=>t.workspaceId),Math.max(0,(context?19000:20000)-prepared.text.length))}
+        catch {orca.log('관제의 작업 이력 조회 실패');const unavailable='\nPod work history is unavailable for this request. Do not claim it was read.';if(prepared.text.length+unavailable.length<=19000)prepared.text+=unavailable}
+      }
+      if ((prepared.kind === 'briefing' || prepared.kind === 'topics' || prepared.kind==='watch') && provider !== 'claude' && provider !== 'codex') throw new CliError('이 에이전트에서는 조회 전용 브리핑을 지원하지 않습니다')
+      activeTurn = { ...prepared, id: randomUUID(), provider, startedAt: Date.now(), endedAt: null, status: 'running', answer: '' }
+      turns = [...turns, activeTurn].slice(-80)
+      if (isTopics) { topicSource = {requestId:activeTurn.id,snapshot:structuredClone(current),repoId}; topicPlan = null; topicError = null }
+      if(context) {watchSource={requestId:activeTurn.id,context};watchError=null}
       try {
+        await saveTurns()
+        if (isTopics) await orca.storage.set(TOPIC_PLAN_KEY,null)
+        if(context) await editWatch(next=>{
+          const previous=next.checkpoints[context.key]
+          next.checkpoints[context.key]={fingerprint:previous?.fingerprint??'',signals:previous?.signals??[],lastAttempt:Date.now(),lastSuccess:previous?.lastSuccess??0,lastCheck:previous?.lastCheck??0}
+        })
         if (epoch !== controlEpoch) throw new CliError('관제 에이전트를 변경하는 중입니다')
-        await rt.send(body, images, pendingHandoff)
+        await rt.send(activeTurn.text, images, pendingHandoff, activeTurn.id)
         if (epoch === controlEpoch && pendingHandoff) {
           pendingHandoff = ''
           await orca.storage.set(CONTROL_HANDOFF_KEY, { items: sharedHistory, to: provider, pending: false })
         }
       } catch (e: any) {
+        if (activeTurn?.status === 'running') { activeTurn.status = 'failed'; activeTurn.endedAt = Date.now(); saveTurns() }
         throw new CliError(e?.message === '작업 중' ? '관제가 답하는 중입니다' : '보내지 못했습니다')
       }
     } finally { sendingControl = false }
     return { sent: true }
+  }
+  orca.panels.handle('pod.control.send', sendControl)
+  orca.panels.handle('pod.control.watch.configure',async(input:any)=>{
+    if(!input || Object.keys(input).some(key=>!['intervalMinutes','changes','scopeMode'].includes(key)) || !Number.isInteger(input.intervalMinutes) || input.intervalMinutes<0 || input.intervalMinutes>240 || typeof input.changes!=='boolean' || input.scopeMode!==undefined && !['all','current'].includes(input.scopeMode)) throw new CliError('브리핑 간격은 1~240분으로 입력하세요')
+    await editWatch(next=>{next.settings=readWatchSettings(input);next.configuredAt=Date.now()})
+    if(runtime)orca.panels.post('pod.control.view',withProvider(runtime.view()))
+    return watchState.settings
+  })
+  orca.panels.handle('pod.control.watch.check',async(input:any)=>{
+    const manual=input?.manual===true
+    if(watchPending || watchSaving || selecting || sendingControl || runtime?.view().busy) return {started:false,reason:'busy'}
+    watchPending=true
+    try {
+      await loadWatch()
+      if(!manual && !watchState.settings.intervalMinutes && !watchState.settings.changes) return {started:false,reason:'disabled'}
+      const context=watchContext(await snapshot(),input?.scope,readWorkJournal(await orca.storage.get(WORK_JOURNAL_KEY)))
+      if(!manual && Date.now()-(watchScanned.get(context.key)??0)<4000) return {started:false,reason:'unchanged'}
+      watchScanned.set(context.key,Date.now())
+      const decision=watchDecision(watchState,context,Date.now(),manual)
+      if(['baseline','checked'].includes(decision)) await editWatch(next=>{
+        const old=next.checkpoints[context.key]
+        next.checkpoints[context.key]={fingerprint:old?.fingerprint??context.fingerprint,signals:old?.signals??context.signals,lastAttempt:old?.lastAttempt??0,lastSuccess:old?.lastSuccess??0,lastCheck:Date.now()}
+      })
+      if(!['request','changes','scheduled'].includes(decision)) {
+        if(manual && !context.workspaces.length) throw new CliError('브리핑할 작업이 없습니다')
+        return {started:false,reason:decision}
+      }
+      if(selecting || sendingControl || runtime?.view().busy) return {started:false,reason:'busy'}
+      await control()
+      if(provider!=='claude' && provider!=='codex') {
+        if(manual) throw new CliError('이 에이전트에서는 조회 전용 브리핑을 지원하지 않습니다')
+        return {started:false,reason:'unsupported'}
+      }
+      await sendControl({text:manual?'지금 브리핑':'관제 브리핑',scope:{kind:'watch',watchScope:context.scope,watchLanguage:input?.language,targets:[]}})
+      return {started:true,reason:decision}
+    } catch(error) {
+      watchError=userMessage(String((error as Error).message))
+      if(runtime)orca.panels.post('pod.control.view',withProvider(runtime.view()))
+      if(manual)throw error
+      return {started:false,reason:'error'}
+    } finally {watchPending=false}
   })
   orca.panels.handle('pod.control.stop', async () => {
+    if (activeTurn?.status === 'running') { activeTurn.status = 'interrupted'; activeTurn.endedAt = Date.now(); saveTurns() }
     await runtime?.stop()
     return { stopped: true }
   })
   orca.panels.handle('pod.control.reset', async () => {
     if (selecting || sendingControl) throw new CliError('관제 에이전트를 변경하는 중입니다')
     const rt = await control()
+    if (activeTurn?.status === 'running') { activeTurn.status = 'interrupted'; activeTurn.endedAt = Date.now(); saveTurns() }
     sharedHistory = []
     pendingHandoff = ''
     await orca.storage.set(CONTROL_HANDOFF_KEY, { items: [], to: provider, pending: false })
@@ -599,6 +775,19 @@ export default function activate(orca: any): void {
   orca.panels.handle('pod.snapshot', async (input: { fresh?: boolean } | undefined) =>
     snapshot(input?.fresh ? 0 : 1_500)
   )
+  orca.panels.handle('pod.progress.view',async(input:unknown)=>({...await progress.view(input),error:progressError}))
+  orca.panels.handle('pod.priority.view',()=>priorities.view())
+  orca.panels.handle('pod.priority.set',async(input:unknown)=>{
+    priorityChange(input)
+    const result=await priorities.set(input,await snapshot())
+    orca.panels.post('pod.priority.changed',{})
+    return result
+  })
+  orca.panels.handle('pod.progress.change',async(input:unknown)=>{
+    await progress.change(input)
+    orca.panels.post('pod.progress.changed',{})
+    return {saved:true}
+  })
 
   orca.panels.handle('pod.openWorkspace', async (input: { id: string }) => {
     const id = text(input?.id, 'id')
@@ -730,93 +919,31 @@ export default function activate(orca: any): void {
     return afterChange({ ok: true })
   })
 
-  // claude -p 로 주제를 뽑는다. 도구·MCP·사용자 훅 없이 한 번만 묻고, 결과를 저장한다.
-  orca.panels.handle('pod.suggestTopics', async (input: { repoId: string }) => {
-    const repoId = text(input?.repoId, 'repoId', 200)
-    const snap = await snapshot(0)
-    const list = Object.values(snap.workspaces)
-      .filter((w) => w.repoId === repoId)
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-      .slice(0, 300)
-    if (list.length === 0) throw new CliError('워크스페이스가 없습니다')
-    const lines = list.map((w, i) =>
-      [
-        `${i}. ${w.name}`,
-        w.branch && w.branch !== w.name ? `브랜치 ${w.branch}` : '',
-        w.pr?.title ? `PR ${w.pr.title}` : '',
-        w.agents.length ? `대화 ${w.agents.slice(0, 2).map((a) => a.title).join(' / ')}` : '',
-        w.comment ? `메모 ${w.comment.slice(0, 80)}` : ''
-      ]
-        .filter(Boolean)
-        .join(' | ')
-        .slice(0, 300)
-    )
-    const prompt = [
-      '아래는 한 저장소에서 진행한 작업(워크스페이스) 목록이다.',
-      '업무 영역 기준으로 주제 5~10개로 묶어라. 제품 기능 영역(예: 결제, 정산처럼)을 우선하고, 인프라·개발환경·운영·사용자문의 대응 같은 비제품 영역도 주제가 될 수 있다.',
-      '주제 이름은 짧은 한국어 명사(2~8자). 각 주제마다 앞으로 새 작업을 분류할 때 쓸 키워드를 6~15개 준다: 작업 이름에 나오는 한국어 단어와 브랜치에 나오는 영어 단어를 모두 포함한다.',
-      '모든 작업 번호(i)를 정확히 하나의 주제에 배정한다. 주제 이름은 topics 의 name 과 똑같이 쓴다.',
-      '',
-      ...lines
-    ].join('\n')
-    const raw = await new Promise<string>((resolve, reject) => {
-      const child = execFile(
-        claudeCli(),
-        [
-          '-p',
-          '--output-format',
-          'json',
-          '--model',
-          'sonnet',
-          '--tools=',
-          '--no-session-persistence',
-          '--strict-mcp-config',
-          '--mcp-config',
-          '{"mcpServers":{}}',
-          '--restricted',
-          '--permission-mode',
-          'dontAsk',
-          '--disable-slash-commands',
-          '--setting-sources=',
-          '--json-schema',
-          SUGGEST_SCHEMA,
-          prompt
-        ],
-        {
-          cwd: tmpdir(),
-          maxBuffer: 16 * 1024 * 1024,
-          timeout: 180_000,
-          // 워커 환경에는 USER 가 없어 claude 가 키체인에서 로그인 정보를 못 찾는다.
-          env: { ...process.env, USER: process.env.USER ?? userInfo().username, LOGNAME: process.env.LOGNAME ?? userInfo().username, ELECTRON_RUN_AS_NODE: undefined }
-        },
-        (err, stdout, stderr) =>
-          err && !stdout ? reject(new CliError(String(stderr || err.message).slice(-300))) : resolve(stdout)
-      )
-      // 표준 입력을 바로 닫아야 claude 가 입력을 기다리지 않는다.
-      child.stdin?.end()
+  // 이전 진입점도 현재 선택한 관제로 제안만 만든다. 저장은 검토 후 applyTopicPlan에서 한다.
+  orca.panels.handle('pod.suggestTopics', async (input: {repoId:string}) => sendControl({text:'주제와 하위 주제를 정리해줘',scope:{kind:'topics',repoId:input?.repoId,targets:[]}}))
+
+  orca.panels.handle('pod.topicState', async (input: {repoId:string}) => {
+    const repoId = text(input?.repoId,'repoId',200)
+    return (await topicSets())[repoId] ?? null
+  })
+
+  orca.panels.handle('pod.applyTopicPlan', async (input: {plan?:unknown}) => {
+    const raw = input?.plan as any
+    const repoId = text(raw?.repoId, 'repoId', 200)
+    let count = 0
+    await editTopicSet(repoId, async previous => {
+      const current = await snapshot(0)
+      if (raw.baseFingerprint !== topicPlanFingerprint(current,repoId)) throw new CliError('분석 뒤 작업 맥락이 바뀌었습니다. 다시 분석하세요')
+      const validated = parseTopicPlan(JSON.stringify({topics:raw.topics,assignments:raw.assignments}), current, repoId)
+      const next = applyTopicPlan(validated, current, repoId, previous)
+      count = validated.assignments.length
+      return next
     })
-    let out: any
-    try {
-      const envelope = JSON.parse(raw)
-      out = envelope.structured_output ?? JSON.parse(envelope.result)
-    } catch {
-      orca.log(`claude 응답을 읽지 못함: ${raw.replace(/"usage":\{.*?"modelUsage":\{\},/, "").slice(0, 900)}`)
-      throw new CliError('주제 결과를 읽지 못했습니다')
-    }
-    const topics = cleanTopics(out?.topics)
-    if (topics.length === 0) throw new CliError('주제를 뽑지 못했습니다')
-    const byName = new Map(topics.map((t) => [t.name, t.id]))
-    const assign: Record<string, string> = {}
-    for (const a of Array.isArray(out?.assignments) ? out.assignments : []) {
-      const w = list[Number(a?.i)]
-      const topicId = byName.get(String(a?.topic ?? '').trim())
-      if (w && topicId) assign[w.id] = topicId
-    }
-    // 다시 뽑아도 사람이 다듬은 것은 남긴다: 이름이 같은 주제는 id 를 이어 쓰고, 하위 주제와 그 배정·「기타」 고정은 그대로 둔다.
-    await editTopicSet(repoId, (prev) => mergeSuggested(prev, topics, assign))
+    if (topicPlan?.repoId === repoId) { topicPlan = null; topicError = null; await orca.storage.set(TOPIC_PLAN_KEY,null).catch(() => orca.log('주제 분류안 캐시 정리 실패')) }
     cache = null
-    refreshSoon(50)
-    return { topics: topics.length, assigned: Object.keys(assign).length }
+    const changed = await afterChange({assigned:count})
+    if (runtime) orca.panels.post('pod.control.view',withProvider(runtime.view()))
+    return changed
   })
 
   orca.panels.handle('pod.tail', async (input: { terminal: string }) => {

@@ -21,6 +21,8 @@ export class TerminalControlRuntime {
   private sending = false
   private since = 0
   private error: string | null = null
+  private requestId: string | null = null
+  private outcome: ControlView['outcome'] = null
   private rev = 0
   private generation = 0
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -32,7 +34,7 @@ export class TerminalControlRuntime {
     this.items = history.slice(-240)
   }
   view(): ControlView & { terminal: string | null } {
-    return { items: this.items.slice(-240), live: this.live, busy: this.busy, since: this.since, sessionId: null, error: this.error, rev: this.rev, terminal: this.terminal }
+    return { items: this.items.slice(-240), live: this.live, busy: this.busy, since: this.since, sessionId: null, error: this.error, requestId: this.busy ? this.requestId : null, outcome: this.outcome, rev: this.rev, terminal: this.terminal }
   }
   private changed(): void { this.rev++; this.deps.emit(this.view()) }
   async load(): Promise<void> {
@@ -66,7 +68,7 @@ export class TerminalControlRuntime {
       this.changed()
     } finally { if (generation === this.generation) this.schedule() }
   }
-  async send(text: string, images: ControlImage[] = [], context = ''): Promise<void> {
+  async send(text: string, images: ControlImage[] = [], context = '', requestId?: string): Promise<void> {
     const body = text.trim()
     if (!body && !images.length) throw new Error('빈 메시지')
     if (this.sending) throw new Error('작업 중')
@@ -76,8 +78,10 @@ export class TerminalControlRuntime {
     this.busy = true
     this.since = Date.now()
     this.error = null
+    this.requestId = requestId ?? null
+    this.outcome = null
     const generation = this.generation
-    this.items.push({ k: 'user', text: body, at: this.since, images: images.length })
+    this.items.push({ k: 'user', text: body, at: this.since, images: images.length, ...(this.requestId ? { requestId: this.requestId } : {}) })
     this.changed()
     try {
       const paths = images.length ? await this.deps.saveImages(images) : []
@@ -103,11 +107,17 @@ export class TerminalControlRuntime {
         receipt = await this.deps.send(this.terminal, message)
       }
       if (generation !== this.generation) return
-      this.items.push({ k: 'note', text: `Tool receipt: ${JSON.stringify(receipt).slice(0, 4000)}`, at: Date.now() })
+      // receipt는 전달 단계일 뿐 에이전트 응답이나 작업 완료가 아니다. 화면에는 터미널의 현재 관측만 live로 둔다.
+      this.items.push({ k: 'note', text: `Tool receipt: ${JSON.stringify(receipt).slice(0, 4000)}`, at: Date.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
       if (this.items.length > 600) this.items.splice(0, this.items.length - 600)
       this.error = null
     } catch (e) {
-      if (generation === this.generation) this.error = '관제 요청을 보내지 못했습니다. Orca에서 설치·로그인 상태를 확인하세요'
+      if (generation === this.generation) {
+        this.error = '관제 요청을 보내지 못했습니다. Orca에서 설치·로그인 상태를 확인하세요'
+        this.items.push({ k: 'note', text: this.error, at: Date.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
+        if (this.requestId) this.outcome = { requestId: this.requestId, status: 'failed' }
+        this.requestId = null
+      }
       throw e
     } finally {
       if (generation === this.generation) {
@@ -122,7 +132,13 @@ export class TerminalControlRuntime {
     this.generation++
     this.sending = false
     this.busy = false
-    if (this.terminal) await this.deps.interrupt(this.terminal)
+    try {
+      if (this.terminal) await this.deps.interrupt(this.terminal)
+    } finally {
+      this.items.push({ k: 'note', text: '중단함', at: Date.now(), ...(this.requestId ? { requestId: this.requestId } : {}) })
+      if (this.requestId) this.outcome = { requestId: this.requestId, status: 'interrupted' }
+      this.requestId = null
+    }
     this.changed()
     this.schedule()
   }
@@ -134,10 +150,16 @@ export class TerminalControlRuntime {
     const interrupt = this.terminal
     this.sending = false
     this.busy = false
-    if (interrupt) {
-      try { await this.deps.interrupt(interrupt) } catch {
-        this.error = '이전 관제의 중단 결과를 확인하지 못했습니다. Orca에서 확인하세요'
+    try {
+      if (interrupt) await this.deps.interrupt(interrupt)
+    } catch {
+      this.error = '이전 관제의 중단 결과를 확인하지 못했습니다. Orca에서 확인하세요'
+    } finally {
+      if (this.requestId) {
+        this.items.push({ k: 'note', text: this.error ?? '중단함', at: Date.now(), requestId: this.requestId })
+        this.outcome = { requestId: this.requestId, status: this.error ? 'failed' : 'interrupted' }
       }
+      this.requestId = null
     }
   }
   async reset(): Promise<void> {
@@ -148,6 +170,8 @@ export class TerminalControlRuntime {
     this.items = []
     this.live = ''
     this.error = null
+    this.requestId = null
+    this.outcome = null
     this.stopped = false
     this.changed()
   }

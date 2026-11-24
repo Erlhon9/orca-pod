@@ -16,6 +16,8 @@ export interface DetailApi {
   openWorkspace(w: WorkspaceView): void
   focusAgent(w: WorkspaceView, a: AgentView): void
   launchAgent(w: WorkspaceView, type?: string): void
+  overview?(w: WorkspaceView): HTMLElement
+  overviewSignature?(w: WorkspaceView): string
   workspaceMenu(at: Element, w: WorkspaceView): void
   statusMenu(at: Element, w: WorkspaceView): void
   openPR(w: WorkspaceView): void
@@ -34,6 +36,7 @@ export interface DetailApi {
 export interface OpenOptions {
   /** 주면 이 요소 안에 창으로 띄운다(그래프 안에서 열기). 없으면 전체 화면. */
   host?: HTMLElement | null
+  overview?: boolean
 }
 
 const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)'
@@ -61,8 +64,18 @@ export function createDetail(api: DetailApi) {
   let host: HTMLElement | null = null
   let hostObserver: ResizeObserver | null = null
   let reserveSide: 'left' | 'right' | null = null
+  let minimized = false
+  let minimizedScroll: { el: HTMLElement; top: number }[] = []
 
   const ws = () => (wsId ? (api.snap()?.workspaces[wsId] ?? null) : null)
+
+  function restoreMinimizedScroll(): void {
+    for (const saved of minimizedScroll) {
+      const selector = saved.el.classList.contains('work-brief') ? '.work-brief' : saved.el.classList.contains('convo') ? '.convo' : '.screen'
+      const target = saved.el.isConnected ? saved.el : root?.querySelector<HTMLElement>(selector)
+      if (target) target.scrollTop = saved.top
+    }
+  }
 
   function sessions(w: WorkspaceView): Session[] {
     const live = w.agents.filter((a) => a.state !== 'done')
@@ -83,6 +96,7 @@ export function createDetail(api: DetailApi) {
   const terminalOf = (s: Session) => (s.kind === 'agent' ? s.agent.terminal : s.handle)
 
   function current(w: WorkspaceView): Session | null {
+    if (sessionKey === 'overview') return null
     const list = sessions(w)
     if (pendingHandle) {
       const fresh = list.find((s) => terminalOf(s) === pendingHandle)
@@ -106,7 +120,10 @@ export function createDetail(api: DetailApi) {
     void api
       .addSession(w, kind)
       .then((handle) => {
-        if (handle) pendingHandle = handle
+        if (handle) {
+          pendingHandle = handle
+          if (sessionKey === 'overview') sessionKey = null
+        }
       })
       .catch(() => {})
       .finally(() => {
@@ -121,6 +138,7 @@ export function createDetail(api: DetailApi) {
       { section: t('새 세션') },
       { label: 'Claude', icon: 'bot', hint: t('에이전트'), onSelect: () => start('claude') },
       { label: 'Codex', icon: 'bot', hint: t('에이전트'), onSelect: () => start('codex') },
+      { label: t('다른 에이전트 선택…'), icon: 'agents', onSelect: () => api.launchAgent(w) },
       { label: t('터미널'), icon: 'terminal', hint: t('셸'), onSelect: () => start('terminal') }
     ])
   }
@@ -146,8 +164,21 @@ export function createDetail(api: DetailApi) {
         ? h('button', { class: 'icon-btn', title: t('닫기 (Esc)'), onClick: close }, icon('x'))
         : h('button', { class: 'icon-btn', title: t('뒤로'), onClick: close }, icon('back')),
       pill,
+      h('span', { class: 'd-mini-title' }, w.name),
       topic ? h('span', { class: 'topic-tag', style: { '--t': topicColor(topic.id) } }, topic.name) : null,
       h('span', { class: 'spacer' }),
+      host && sessionKey === 'overview' ? h('button', { class: 'icon-btn d-minimize', title: minimized ? t('작업 맥락 펼치기') : t('작업 맥락 접기'), 'aria-expanded': String(!minimized), onClick: () => {
+        if (!minimized) minimizedScroll = [...(root?.querySelectorAll<HTMLElement>('.work-brief, .convo, .screen') ?? [])].map(el => ({ el, top: el.scrollTop }))
+        minimized = !minimized
+        root?.classList.toggle('minimized', minimized)
+        if (!minimized) {
+          restoreMinimizedScroll()
+          update()
+        } else renderHead(w)
+        if (root) placeInHost(root, null)
+        if (!minimized) requestAnimationFrame(restoreMinimizedScroll)
+        root?.querySelector<HTMLButtonElement>('.d-minimize')?.focus({ preventScroll: true })
+      } }, icon(minimized ? 'unfold' : 'fold')) : null,
       host ? h('button', { class: 'icon-btn', title: t('크게 보기'), onClick: expand }, icon('fit')) : null,
       h('button', { class: host ? 'icon-btn' : 'pill-btn', title: t('Orca에서 열기'), onClick: () => api.openWorkspace(w) }, icon('open'), host ? null : t('Orca에서 열기')),
       more
@@ -195,6 +226,11 @@ export function createDetail(api: DetailApi) {
     const prevScroll = (tabs.firstElementChild as HTMLElement | null)?.scrollLeft ?? 0
     const scroller = h('div', { class: 'd-tabs-scroll' })
     tabs.replaceChildren(scroller)
+    if (api.overview) scroller.append(h('button', { class: `d-tab brief-tab${sessionKey === 'overview' ? ' on' : ''}`, onClick: () => {
+      sessionKey = 'overview'
+      update()
+      if (wsId) api.onSelect?.({ wsId, agentKey: null })
+    } }, icon('book'), t('작업 맥락')))
     scroller.append(
       ...sessions(w).map((s) => {
         const on = sel && keyOf(s) === keyOf(sel)
@@ -556,6 +592,29 @@ export function createDetail(api: DetailApi) {
     if (!w) return close()
     renderHead(w)
     renderTabs(w)
+    const overview = sessionKey === 'overview' && api.overview
+    const modeChanged = root.classList.contains('context-mode') !== !!overview
+    root.classList.toggle('context-mode', !!overview)
+    if (host && modeChanged) placeInHost(root, null)
+    if (minimized) return
+    if (sessionHead) sessionHead.hidden = !!overview
+    if (overview && sessionBody) {
+      const sig = `overview:${w.id}:${api.overviewSignature?.(w) ?? ''}`
+      if (sig !== renderedSession) {
+        const old = sessionBody.querySelector('.work-brief')
+        const scroll = old?.scrollTop ?? 0
+        const opened = new Set([...sessionBody.querySelectorAll<HTMLDetailsElement>('details[open]')].map(el => el.dataset.contextKey))
+        stopPoll()
+        refreshBody = null
+        screen = null
+        const next = overview(w)
+        sessionBody.replaceChildren(next)
+        next.querySelectorAll<HTMLDetailsElement>('details').forEach(el => { el.open = opened.has(el.dataset.contextKey) })
+        next.scrollTop = scroll
+        renderedSession = sig
+      }
+      return
+    }
     const s = current(w)
     if (s) sessionKey = keyOf(s)
     if (s) renderSessionHead(w, s)
@@ -582,8 +641,13 @@ export function createDetail(api: DetailApi) {
     const H = hr.height
     const fr = from?.isConnected ? from.getBoundingClientRect() : null
     const st = el.style
+    if (minimized) {
+      Object.assign(st, { top: '', bottom: '8px', height: '46px', width: W >= 760 ? '320px' : '', left: W >= 760 && reserveSide !== 'left' ? '' : '8px', right: W >= 760 && reserveSide === 'left' ? '' : '8px' })
+      api.onReserve?.({ side: 'bottom', size: 62 })
+      return
+    }
     if (W >= 760) {
-      const width = Math.min(620, Math.max(420, W * 0.48))
+      const width = el.classList.contains('context-mode') ? Math.min(420, Math.max(320, W * 0.32)) : Math.min(620, Math.max(420, W * 0.48))
       const nodeLeft = fr ? fr.left + fr.width / 2 - hr.left < W / 2 : true
       st.top = '52px'
       st.bottom = '12px'
@@ -607,8 +671,10 @@ export function createDetail(api: DetailApi) {
       st.bottom = '8px'
       st.top = ''
       st.width = ''
-      st.height = `${Math.max(320, Math.round(H * 0.66))}px`
-      api.onReserve?.({ side: 'bottom', size: Math.max(320, Math.round(H * 0.66)) + 16 })
+      const desired = el.classList.contains('context-mode') ? Math.min(240, Math.max(160, Math.round(H * 0.4)), Math.max(80, H - 140)) : Math.max(240, Math.round(H * 0.66))
+      const height = Math.min(Math.max(0, H - 16), desired)
+      st.height = `${height}px`
+      api.onReserve?.({ side: 'bottom', size: height + 16 })
     }
   }
 
@@ -652,13 +718,17 @@ export function createDetail(api: DetailApi) {
     if (fresh) origin = from ?? null
     else if (host && from) origin = from
     wsId = id
-    sessionKey = agentKey ? (agentKey.startsWith('t:') ? agentKey : `a:${agentKey}`) : null
+    minimized = false
+    minimizedScroll = []
+    root?.classList.remove('minimized')
+    sessionKey = opts.overview && api.overview ? 'overview' : agentKey ? (agentKey.startsWith('t:') ? agentKey : `a:${agentKey}`) : null
     renderedSession = ''
     // 창 위치를 정하기 전에 선택을 알려야 그래프가 줄어들지 않고 그 노드 쪽으로 옮겨 간다.
     api.onSelect?.({ wsId: id, agentKey: agentKey && !agentKey.startsWith('t:') ? agentKey : null })
     if (!root) {
       host = wantHost
       root = build()
+      root.classList.toggle('context-mode', !!opts.overview)
       if (host) {
         root.classList.add('inline')
         host.append(root)
@@ -676,6 +746,7 @@ export function createDetail(api: DetailApi) {
       root.animate?.([{ boxShadow: '0 0 0 2px var(--ring), var(--shadow)' }, { boxShadow: '0 0 0 1px var(--border), var(--shadow)' }], { duration: 500, easing: EASE })
     }
     update()
+    if (host && root) placeInHost(root, null)
     api.onSelect?.({ wsId: id, agentKey: sessionKey?.startsWith('a:') ? sessionKey.slice(2) : null })
     if (fresh && root) {
       growFrom(root, origin)
@@ -701,6 +772,7 @@ export function createDetail(api: DetailApi) {
   function expand(): void {
     if (!wsId) return
     const id = wsId
+    const overview = sessionKey === 'overview'
     const key = sessionKey?.startsWith('a:') ? sessionKey.slice(2) : undefined
     const from = root
     const rect = from?.getBoundingClientRect()
@@ -708,7 +780,7 @@ export function createDetail(api: DetailApi) {
     // 창이 있던 자리에서 전체 화면으로 펼친다.
     const ghost = rect ? h('div', { style: { position: 'fixed', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, pointerEvents: 'none' } }) : null
     if (ghost) document.body.append(ghost)
-    open(id, key, ghost)
+    open(id, key, ghost, { overview })
     ghost?.remove()
     origin = null
   }
