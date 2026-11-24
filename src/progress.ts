@@ -9,13 +9,18 @@ export interface ProgressEvent {id:string;at:number;kind:ProgressKind;title:stri
 interface Cursor {status:string;comment:string;pr:string;agents:Record<string,{message:string;question:string}>}
 export interface ProgressRoot {version:1;startedAt:number;lastAt:number;cursors:Record<string,Cursor>;proofs:string[];pages:{key:string;from:number;to:number}[];confirmed:Record<string,{kind:ProgressKind;at:number}>;retracted:string[];gaps:{from:number;to:number}[]}
 export interface ProgressView {startedAt:number;lastAt:number;date:string;timezone:string;events:ProgressEvent[];workspaces:ProgressWork[];marks:Record<string,{count:number}>;workspaceId:string|null;recordCount:number;count:number;nextCursor:string|null;partial:boolean;beforeCollection:boolean;error:string|null}
-export function recordedTopicPath(w:ProgressWork):string[] {const names:string[]=[],seen=new Set<string>();let current=w.topics.find(t=>t.id===w.topic);while(current&&!seen.has(current.id)&&names.length<6){seen.add(current.id);names.unshift(current.name);current=w.topics.find(t=>t.id===current!.parent)}return names}
+export function recordedTopicPath(w:Pick<ProgressWork,'topics'|'topic'>):string[] {const names:string[]=[],seen=new Set<string>();let current=w.topics.find(t=>t.id===w.topic);while(current&&!seen.has(current.id)&&names.length<6){seen.add(current.id);names.unshift(current.name);current=w.topics.find(t=>t.id===current!.parent)}return names}
 export const emptyProgress=():ProgressRoot=>({version:1,startedAt:0,lastAt:0,cursors:{},proofs:[],pages:[],confirmed:{},retracted:[],gaps:[]})
 export function progressHash(value:unknown):string {let h=14695981039346656037n;const s=JSON.stringify(value);for(let i=0;i<s.length;i++)h=BigInt.asUintN(64,(h^BigInt(s.charCodeAt(i)))*1099511628211n);return h.toString(36)+':'+s.length}
 export function progressDate(at:number,timezone:string):string {
   const p=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(at)
   const get=(k:string)=>p.find(p=>p.type===k)!.value
   return `${get('year')}-${get('month')}-${get('day')}`
+}
+/** 시간대의 월 시작 경계를 UTC로 환산한다. DST와 연도 변경을 포함한다. */
+export function progressMonthBounds(month:string,timezone:string):{from:number;to:number} {
+ const start=(year:number,m:number)=>{const nominal=Date.UTC(year,m-1,1);let lo=nominal-48*3600_000,hi=nominal+48*3600_000;const target=`${year}-${String(m).padStart(2,'0')}-01`;while(lo<hi){const mid=Math.floor((lo+hi)/2);if(progressDate(mid,timezone)<target)lo=mid+1;else hi=mid}return lo}
+ const [y,m]=month.split('-').map(Number);return {from:start(y,m),to:start(m===12?y+1:y,m===12?1:m+1)}
 }
 export function readProgressQuery(input:any,now=Date.now()):{date:string;timezone:string;repoId:string|null;topicPath:string[]|null;workspaceId:string|null;cursor:string|null} {
   if(!input || typeof input!=='object' || Array.isArray(input)||Object.keys(input).some(k=>!['date','timezone','repoId','topicPath','workspaceId','cursor'].includes(k)))throw new Error('기록 범위를 확인하세요')
@@ -153,6 +158,10 @@ export class ProgressRepository {
     for(const e of day){const mark=marks[e.workspace.id]??{count:0};mark.count++;marks[e.workspace.id]=mark}
     const start=root.startedAt?progressDate(root.startedAt,q.timezone):null
     return {startedAt:root.startedAt,lastAt:root.lastAt,date:q.date,timezone:q.timezone,events:visible,workspaces:[...latest.values()],marks,workspaceId:q.workspaceId,recordCount:records.length,count:day.length,nextCursor:index+visible.length<records.length?visible.at(-1)!.id:null,partial:root.gaps.some(g=>progressDate(g.from,q.timezone)<=q.date&&progressDate(g.to,q.timezone)>=q.date),beforeCollection:!start||q.date<start,error:null}
+  })}
+  async month(input:{month:string;timezone:string;repoId:string|null;topicPath:string[]|null}):Promise<{events:ProgressEvent[];startedAt:number;lastAt:number;partial:boolean;beforeCollection:boolean}> {return this.serialize(async()=>{
+    const root=await this.load(),{from,to}=progressMonthBounds(input.month,input.timezone),events=(await this.all(root)).filter(e=>e.at>=from&&e.at<to&&(!input.repoId||e.workspace.repoId===input.repoId)&&(input.topicPath===null||(input.topicPath.length?input.topicPath.every((p,i)=>recordedTopicPath(e.workspace)[i]===p):recordedTopicPath(e.workspace).length===0)))
+    return {events,startedAt:root.startedAt,lastAt:root.lastAt,partial:root.gaps.some(g=>g.from<to&&g.to>from)||(root.startedAt>from&&root.startedAt<to)||(root.lastAt>0&&root.lastAt<Math.min(to,Date.now())-120_000),beforeCollection:!root.startedAt||to<=root.startedAt}
   })}
   async context(workspaceIds:string[],maxChars=4000):Promise<string> {return this.serialize(async()=>{
     if(maxChars<300)return ''

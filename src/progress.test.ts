@@ -148,3 +148,13 @@ test('기존 경험치 필드가 있는 저장 기록도 근거를 보존하고 
  snap.at+=61000;await restored.observe(snap);assert.equal('xpVisible' in (store.data.get(PROGRESS_KEY) as object),false)
  let failed=false;try{await restored.change({xpVisible:false})}catch{failed=true}assert.equal(failed,true)
 })
+
+test('월 기록은 하루의 첫 100건을 넘어서 수집하고 당시 주제·철회를 보존한다',async()=>{
+ const store=storage(),repo=new ProgressRepository(store),snap=source();await repo.observe(snap)
+ for(let i=0;i<105;i++){snap.at+=1000;snap.workspaces.w.agents[0].lastMessage='Observed result '+i;await repo.observe(snap)}
+ const monthly=await repo.month({month:'2026-11',timezone:'Asia/Seoul',repoId:'r',topicPath:['서비스','연동']})
+ assert.equal(monthly.events.length,105);assert.equal(monthly.beforeCollection,false)
+ const e=monthly.events[0];await repo.change({id:e.id,kind:'decision'},snap.at+1);await repo.change({id:e.id,retract:true},snap.at+2)
+ const restored=await new ProgressRepository(store).month({month:'2026-11',timezone:'Asia/Seoul',repoId:'r',topicPath:null});assert.equal(restored.events.find(r=>r.id===e.id)?.retracted,true)
+ assert.equal((await repo.month({month:'2026-10',timezone:'Asia/Seoul',repoId:'r',topicPath:null})).beforeCollection,true)
+})

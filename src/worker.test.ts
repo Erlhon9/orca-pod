@@ -164,3 +164,9 @@ test('중요도 조회와 잘못된 P0/P1/P2 입력은 작업 실행이나 상�
   assert.equal(host.calls.some(call=>/agent.launch|terminal.send|workspace.open/.test(call.method)),false)
   await worker.deactivate()
 })
+
+test('잘못된 월별·컴퓨터 조회는 외부 도구와 작업을 실행하기 전에 거부한다',async()=>{
+ const worker=await mountWorker(main,{host:mockHost({})})
+ for(const [name,input] of [['pod.dashboard.month',{month:'2026-13'}],['pod.dashboard.month',{month:'2026-11',shell:'bad'}],['pod.dashboard.machine',{path:'/private'}]] as const){let failed=false;try{await worker.request(name,input)}catch{failed=true}assert.equal(failed,true)}
+ await worker.deactivate()
+})

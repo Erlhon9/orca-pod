@@ -18,6 +18,7 @@ import { dragJustEnded, draggableRow } from './dnd'
 import { burstAt, celebrate, floatText } from './fx'
 import { createGraph } from './graph'
 import { createProgress } from './progress'
+import { createDashboard } from './dashboard'
 import { priorityBadge } from './priority-badge'
 import { workPriority, type PriorityLevel, type PriorityOverrides } from '../work-priority'
 import { closeMenu, hideHover, hoverable, openMenu, openSheet, refreshHover, sheetOpen, toast, type MenuItem } from './overlays'
@@ -40,7 +41,7 @@ import {
 
 declare const orca: any
 
-type View = 'board' | 'agents' | 'graph'
+type View = 'board' | 'agents' | 'graph' | 'dashboard'
 type Filter = null | 'working' | 'attention' | 'in-progress' | 'in-review'
 
 const state = {
@@ -1033,6 +1034,7 @@ function statusFilterMenu(): void {
 statusBtn.addEventListener('click', statusFilterMenu)
 
 const VIEWS: { id: View; label: string; icon: string }[] = [
+  { id: 'dashboard', label: t('대시보드'), icon: 'board' },
   { id: 'graph', label: t('그래프'), icon: 'graph' },
   { id: 'board', label: t('보드'), icon: 'board' },
   { id: 'agents', label: t('에이전트'), icon: 'agents' },
@@ -1066,6 +1068,7 @@ function langMenu(): void {
   openMenu(langBtn, [{ section: t('언어') }, item('auto', t('자동')), item('ko', '한국어'), item('en', 'English')], langBtn) // i18n-skip: 언어 이름은 번역하지 않는다
 }
 
+let viewSegmentKey=''
 function renderTop(): void {
   const snap = state.snap
   const stale = state.lastSync && Date.now() - state.lastSync > 20_000
@@ -1076,18 +1079,22 @@ function renderTop(): void {
       ? t(`실시간 · {n}`, { n: ago(state.lastSync) })
       : t('연결 중')
 
+  const nextViewSegmentKey=state.view+'|'+progress.isHistory()+'|'+currentLang()
+  if(nextViewSegmentKey!==viewSegmentKey){
   viewSeg.replaceChildren(
     ...VIEWS.map((v) =>
       h('button', { class: state.view === v.id ? 'on' : '',disabled:progress.isHistory()&&v.id!=='graph', role: 'tab', 'aria-selected': String(state.view === v.id), onClick: () => setView(v.id) }, icon(v.icon), v.label)
     )
   )
+    viewSegmentKey=nextViewSegmentKey
+  }
 
   renderRepoBar()
   renderStatusBtn()
   priorityFilter.replaceChildren(state.priorityLevel??t('중요도'))
-  priorityFilter.toggleAttribute('disabled',progress.isHistory())
-  topicManage.toggleAttribute('disabled',progress.isHistory())
-  statusBtn.toggleAttribute('disabled',progress.isHistory())
+  priorityFilter.toggleAttribute('disabled',progress.isHistory()||state.view==='dashboard'&&!!dashboard.history())
+  topicManage.toggleAttribute('disabled',progress.isHistory()||state.view==='dashboard'&&!!dashboard.history())
+  statusBtn.toggleAttribute('disabled',progress.isHistory()||state.view==='dashboard'&&!!dashboard.history())
 }
 
 /* ---------- 본문: 보드 ---------- */
@@ -1835,7 +1842,7 @@ const controller = createController({
   openUrl: (url) => detailOpenUrl(url),
   memory: id => journal[id],
   watchScope:()=>({repoId:scopedRepo(),topicKey:state.scopeMode==='topic'?state.topicScope:null}),
-  history:progress.history,
+  history:()=>state.view==='dashboard'?dashboard.history():progress.history(),
   priority:priorityOf,
   editPriority,
   reviewTopics: reviewTopicPlan,
@@ -1932,6 +1939,18 @@ const graph = createGraph({
   }
 })
 
+const dashboard=createDashboard({
+  call,snap:()=>state.snap,search:()=>state.query,
+  scope:()=>({repoId:scopedRepo(),topicPath:state.scopeMode==='topic'&&state.topicScope&&state.snap?collectTopicScopes(state.snap,()=>true).find(s=>s.key===state.topicScope)?.path??null:null}),
+  priority:priorityOf,editPriority,
+  select:(w,a)=>controller.select(w,a),
+  resume:(id,key)=>{const w=ws(id);if(!w){toast(t('현재 작업을 찾지 못했습니다'),'err');return false}controller.select(w,w.agents.find(a=>a.key===key));return true},
+  changed:()=>{if(state.view==='dashboard'){renderTop();if(dashboard.history()&&!controller.el.classList.contains('open'))controller.show();controller.update()}},
+  openUrl:url=>detailOpenUrl(url),
+  load:()=>orca.storage.get('pod.dashboard.prefs.v1'),
+  save:value=>orca.storage.set('pod.dashboard.prefs.v1',value)
+})
+
 const workspaceShell = h('main', { class: 'workspace-shell control-collapsed' })
 function applyControlLayout(): void {
   workspaceShell.dataset.controlPosition=state.controlPosition
@@ -1964,6 +1983,7 @@ function renderGraph(snap: Snapshot): void {
 
 function renderBody(): void {
   const snap = state.snap
+  dashboard.setVisible(state.view==='dashboard')
   controller.update()
   progress.update()
   body.classList.toggle('graph-mode', state.view === 'graph')
@@ -1975,6 +1995,11 @@ function renderBody(): void {
         ? h('div', { class: 'banner' }, h('b', null, t('불러오지 못했습니다')), h('div', { style: { marginTop: '4px', color: 'var(--muted)' } }, tt(state.error)))
         : h('div', null, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }))
     )
+    return
+  }
+  if(state.view==='dashboard'){
+    if(dashboard.el.parentElement!==body)body.replaceChildren(dashboard.el)
+    dashboard.update(snap,Object.values(snap.workspaces).filter(matches))
     return
   }
   if (state.view === 'graph') {
@@ -2034,7 +2059,7 @@ async function loadPrefs(): Promise<void> {
         return
       }
     }
-    if (p.view === 'board' || p.view === 'agents' || p.view === 'graph') state.view = p.view
+    if (p.view === 'board' || p.view === 'agents' || p.view === 'graph' || p.view === 'dashboard') state.view = p.view
     if (Array.isArray(p.hidden)) state.hidden = new Set(p.hidden.filter((x: unknown) => typeof x === 'string'))
     state.collapsedRepos = new Set(Array.isArray(p.collapsedRepos) ? p.collapsedRepos : [])
     state.openGroups = new Set(Array.isArray(p.openGroups) ? p.openGroups : [])
@@ -2106,13 +2131,13 @@ async function start(): Promise<void> {
   renderBody()
   orca.plugin?.on?.('pod.changed', (snap: Snapshot) => receive(snap))
   orca.plugin?.on?.('pod.control.view', (v: ControlView) => controller.receive(v))
-  orca.plugin?.on?.('pod.progress.changed',()=>void progress.refresh())
+  orca.plugin?.on?.('pod.progress.changed',()=>{void progress.refresh();dashboard.invalidate()})
   orca.plugin?.on?.('pod.priority.changed',()=>void loadPriorities().then(()=>{renderTop();renderBody()}))
   await sync(true)
   controller.observeWatch()
   // 이벤트가 오지 않는 변화(도구 호출, 메시지)를 위해 화면이 보일 때만 주기적으로 맞춘다.
   window.setInterval(() => {
-    if (document.visibilityState === 'visible') {void sync();controller.observeWatch()}
+    if (document.visibilityState === 'visible') {void sync();controller.observeWatch();dashboard.tick()}
   }, 4000)
   window.setInterval(tick, 10_000)
 }

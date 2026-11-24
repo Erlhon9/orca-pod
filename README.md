@@ -2,13 +2,17 @@
 
 **Understand, prioritize, and continue work across Orca sessions.**
 
-Version **0.5.0** · [Release notes](CHANGELOG.md#050)
+Version **0.6.0** · [Release notes](CHANGELOG.md#060)
 
 ![Pod graph with fictional example workspaces](images/graph.jpg)
 
 Pod brings your repositories, topics, workspaces, and agent sessions onto one map. See what needs your attention, open a session without leaving the graph, and coordinate the next instruction through Control.
 
 ## What you can do
+
+- **See work in Dashboard.** Open Overview, Development, Work flow, Agent, Computer, or Activity. Select a current work item to prepare its existing Control target; selecting it does not call a model or send an instruction.
+- **Review a month of activity.** Choose a month, repository or topic, PR author, and record kind. Inspect merged PRs, observed checks, decisions, and their sources. Totals cover the complete retrieved month; lists are paginated. Merges are read through your installed, authenticated GitHub CLI. Source errors and partial results remain visible.
+- **Inspect the Pod host.** The Computer tab reads CPU, total/free memory, filesystem space, related processes, and supported battery data. It samples while visible and stops requesting on other views. These are host observations; they do not identify a particular agent as the cause of a slowdown.
 
 - **Prioritize current work.** Use P0/P1/P2 badges on the map, board, and in Control. Click a badge to set a priority or return to Automatic, and filter by priority beside the scope bar. P0 is user-designated. Automatic P1 reflects explicit questions, blocked sessions, or failed PR checks without an active session; ordinary waiting stays P2. Control shows the reason. Overrides survive reopening and are bound to the workspace branch.
 - **Look back by date.** Open Today’s history or choose a date above the map. Start with grouped workspaces, select one for its records and evidence, and choose Continue in current work to return to its latest available context. Historical browsing is read-only for work actions and preserves your current drafts. History starts with collection, retains gaps and historical names, and is independent of the provider conversation.
@@ -49,12 +53,13 @@ See sessions that need attention first, followed by workspaces grouped by topic 
 
 ![Board with generic workspace names and agent states](images/board.jpg)
 
-**Screenshot privacy:** screenshots show the earlier layout with fictional demo data; 0.5.0 adds priority and dated-history controls. Names and conversations are generic examples. Real workspace names, branches, pull request details, file paths, commands, and internal discussions are not included.
+**Screenshot privacy:** screenshots show the earlier layout with fictional demo data; 0.5.0 added priority and dated-history controls; 0.6.0 adds Dashboard. Names and conversations are generic examples. Real workspace names, branches, pull request details, file paths, commands, and internal discussions are not included.
 
 ## Requirements
 
 - Orca **1.4.248 or later** on macOS.
 - The `orca` command available in your terminal.
+- The GitHub CLI (`gh`), authenticated for the selected repositories, for merged-PR history.
 - An installed and signed-in agent CLI for Control. Embedded Claude Control requires Claude Code **2.1.325 or later**, including its restricted mode. Topic organization also supports embedded Codex Control. Pod does not install or update agent CLIs.
 
 ## Install

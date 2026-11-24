@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+- Add Dashboard alongside Graph, Board, and Agent without changing the existing startup view. Keep Control placement, exact targets, source navigation, and drafts across view changes.
+- Add Overview, Development, Work flow, Agent, Computer, and Activity tabs. Surface work needing attention, recent recorded changes, merged changes, and review work with links to their evidence.
+- Add monthly activity details with month navigation, repository/topic/search scope, PR-author and record-kind filters, full-month totals, paginated records, and selected-record evidence. Historical browsing locks instructions; returning to current work resolves the exact live target again.
+- Read merged PR history through the installed GitHub CLI, including work whose workspace is no longer open. Use merge timestamps in the selected timezone, deduplicate PRs, split large searches, cache read results, and show incomplete or failed sources explicitly.
+- Collect current CPU, total/free memory, filesystem capacity, related process CPU/RSS, and battery when supported. Label the Pod host, retain only bounded in-memory CPU samples, and query while the Computer tab is visible. CPU samples, processes, and merges do not establish performance causes, productivity, or deployment success.
+- Preserve the latest successful Git result on a failed refresh. Keep complete-month totals and merged-change previews independent of the first 100 displayed records.
+- Keep monthly filters, records, and selected evidence mounted across metadata polling. Use a compact historical Control summary and JSON-safe legacy record responses.
+- Add dashboard widget preferences, English/Korean labels, source timestamps, and coverage warnings. No new plugin capabilities, process-control actions, or background service are added.
+
+Current boundaries: GitHub CLI authentication and a supported GitHub origin are required for merged-PR history. Topic-scoped PRs require a known workspace/topic link. Pod activity begins with collection; gaps remain visible. Computer metrics describe the Pod execution host; remote attribution, memory pressure, temperature, and deployment tracking are not inferred.
+
 ## 0.5.0
 
 Control is now the main place to understand, prioritize, and continue work across sessions. The map stays available for navigation, with dated work history stored independently of provider conversations.

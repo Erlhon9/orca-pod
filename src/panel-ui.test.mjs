@@ -7,6 +7,7 @@ import { Window } from 'happy-dom';
 import { WORK_JOURNAL_KEY, readWorkJournal, readWorkMemory } from './work-memory';
 import { ProgressRepository } from './progress';
 import { PriorityRepository } from './work-priority';
+import { dashboardQuery, paginateDashboard } from './dashboard';
 const panelCode = execFileSync('bun', ['build', 'src/panel/app.ts', '--target=browser'], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
 const w = {
     id: 'example-work', workspaceId: 'example', name: 'Example task', branch: 'example', repoId: 'example-repo', repo: 'Example',
@@ -59,6 +60,12 @@ async function fixture(lang = 'en', initial = {}, initialSnapshot = snapshot()) 
                     try {if(await progress.observe(snap))events.get('pod.progress.changed')?.({});}catch{}
                     return structuredClone(snap);
                 }
+                if(name==='pod.dashboard.month'){
+                    if(initial['mock-dashboard-error'])throw new Error('Monthly source unavailable');
+                    const q=dashboardQuery(input),records=initial['mock-dashboard-records']||[];
+                    return paginateDashboard(q,records,{at:Date.now(),complete:true,errors:[],topicLimited:false},{startedAt:Date.now(),lastAt:Date.now(),partial:false,beforeCollection:false});
+                }
+                if(name==='pod.dashboard.machine')return {at:Date.now(),host:'fictional-host',platform:'darwin',cpu:46,cpuCount:8,memory:{total:32*1024**3,free:12*1024**3},disk:{total:512*1024**3,free:112*1024**3},battery:76,processes:[],samples:[],errors:[]};
                 if(name==='pod.priority.view')return priorities.view();
                 if(name==='pod.priority.set'){const result=await priorities.set(input,snap);events.get('pod.priority.changed')?.({});return result;}
                 if (name === 'pod.progress.view') return progress.view(input);
@@ -260,7 +267,7 @@ test('퀘스트 설정은 그래프로 옮기고 저장한 배치·기억은 보
     const f = await fixture('en', { 'pod.prefs': { view: 'quests', repo: w.repoId, lang: 'en', graphPositions: positions }, [WORK_JOURNAL_KEY]: { [w.id]: readWorkMemory({ goal: 'Keep this objective', nextStep: 'Inspect the next condition' }) } });
     try {
         assert.equal(f.document.querySelector('.toolbar [aria-selected=true]')?.textContent, 'Graph');
-        assert.equal(f.document.querySelectorAll('.toolbar [role=tab]').length, 3);
+        assert.equal(f.document.querySelectorAll('.toolbar [role=tab]').length, 4);
         assert.equal(f.document.querySelector('.gc-recap')?.textContent, 'Keep this objective');
         assert.equal(f.document.querySelector('.gc-next')?.textContent, 'Inspect the next condition');
         assert.deepEqual(f.stored['pod.prefs'].graphPositions, positions);
@@ -882,4 +889,73 @@ test('중요도 필터는 P0 지정 작업만 보여주고 저장 실패는 이�
         assert.equal(f.document.querySelector('.gc .work-priority').textContent,'P0');
         assert.equal(f.stored['pod.work-priorities.v1'][w.id].level,'P0');
     }finally{await f.close();}
+});
+
+
+test('대시보드는 기존 보기와 관제를 공유하고 선택만으로 새 모델·세션을 실행하지 않는다',async()=>{
+ const f=await fixture('ko');try{
+  const dashboardButton=[...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='대시보드');assert.ok(dashboardButton);dashboardButton.click();
+  await wait(()=>!!f.document.querySelector('.dashboard'));
+  assert.equal(f.document.querySelector('.db-tabs').children.length,6);
+  f.document.querySelector('.db-work').click();
+  assert.ok(f.document.querySelector('.dk-target').textContent.includes(w.name));
+  assert.equal(f.calls.some(c=>/control.send|launchAgent|focusAgent|openWorkspace/.test(c.name)),false);
+  assert.equal(f.stored['pod.prefs'].view,'dashboard');
+ }finally{await f.close()}
+});
+
+test('월별 PR은 달력 없이 전체 합계·100건 페이지·검색·작성자 범위를 유지한다',async()=>{
+ const records=Array.from({length:150},(_,i)=>({id:'merge:'+i,kind:'merge',at:Date.now()-i,title:'Merged '+i,repoId:w.repoId,repo:w.repo,workspaceId:null,sessionKey:null,evidence:'main',confirmation:'observation',pr:{number:i+1,url:'https://github.com/example/project/pull/'+(i+1),base:'main',author:'tester',createdAt:Date.now()-3600000}}));
+ const f=await fixture('ko',{'mock-dashboard-records':records});try{
+  [...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='대시보드').click();
+  f.document.querySelector('[data-dashboard-tab=activity]').click();
+  await wait(()=>f.document.querySelectorAll('.db-record').length===100);
+  assert.equal(f.document.querySelector('.db-metric strong').textContent,'150');assert.equal(f.document.querySelector('.calendar'),null);
+  f.document.querySelector('.db-more').click();await wait(()=>f.document.querySelectorAll('.db-record').length===150);
+  const author=f.document.querySelector('.db-author');author.value='all';author.dispatchEvent(new f.window.Event('change'));await wait(()=>f.calls.some(c=>c.name==='pod.dashboard.month'&&c.input.author==='all'));
+  const search=f.document.querySelector('.search input');search.value='Merged 149';search.dispatchEvent(new f.window.Event('input'));await wait(()=>f.document.querySelectorAll('.db-record').length===1);assert.equal(f.document.querySelector('.db-metric strong').textContent,'1');
+  const month=f.document.querySelector('.db-month');month.value='2026-10';month.dispatchEvent(new f.window.Event('change'));await wait(()=>f.calls.some(c=>c.name==='pod.dashboard.month'&&c.input.month==='2026-10'));
+ }finally{await f.close()}
+});
+
+test('월별 근거를 보는 동안 지시는 잠기고 현재 작업으로 돌아오면 이전 초안을 복원한다',async()=>{
+ const records=[{id:'record-one',kind:'merge',at:Date.now(),title:'Historical result',repoId:w.repoId,repo:w.repo,workspaceId:w.id,sessionKey:w.agents[0].key,evidence:'main',confirmation:'observation',pr:{number:12,url:'https://github.com/example/project/pull/12',base:'main',author:'tester',createdAt:Date.now()-3600000}}];
+ const f=await fixture('ko',{'mock-dashboard-records':records});try{
+  f.document.querySelector('.gc-sess').click();const input=f.document.querySelector('.dk-composer textarea');input.value='Keep exact draft';input.dispatchEvent(new f.window.Event('input'));
+  [...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='대시보드').click();f.document.querySelector('[data-dashboard-tab=activity]').click();await wait(()=>!!f.document.querySelector('.db-record'));
+  f.document.querySelector('.db-record').click();assert.equal(f.document.querySelector('.control').dataset.history,'true');assert.equal(input.readOnly,true);assert.equal(input.value,'Keep exact draft');
+  const css=f.document.createElement('style');css.textContent=readFileSync('src/panel/style.css','utf8');f.document.head.append(css);assert.ok(f.window.getComputedStyle(f.document.querySelector('.workspace-shell')).getPropertyValue('grid-template-rows').trim().endsWith(' auto'),'과거 기록의 관제 요약은 고정 높이를 차지하지 않는다');
+  f.document.querySelector('.dashboard .db-continue').click();await wait(()=>f.document.querySelector('.control').dataset.history==='false');assert.equal(input.readOnly,false);assert.equal(input.value,'Keep exact draft');assert.ok(f.document.querySelector('.dk-target').textContent.includes(w.agents[0].title));
+  assert.equal(f.calls.some(c=>/control.send|launchAgent|focusAgent|openWorkspace/.test(c.name)),false);
+ }finally{await f.close()}
+});
+
+test('컴퓨터 조회는 컴퓨터 탭에서만 요청하고 설정된 위젯을 감출 수 있다',async()=>{
+ const f=await fixture('ko');try{
+  [...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='대시보드').click();assert.equal(f.calls.some(c=>c.name==='pod.dashboard.machine'),false);
+  const monthlyBefore=f.calls.filter(c=>c.name==='pod.dashboard.month').length;f.document.querySelector('[data-dashboard-tab=flow]').click();assert.equal(f.document.querySelector('.db-month'),null);assert.equal(f.calls.filter(c=>c.name==='pod.dashboard.month').length,monthlyBefore);
+  f.document.querySelector('[data-dashboard-tab=machine]').click();await wait(()=>!!f.document.querySelector('.db-cpu-chart'));assert.ok(f.document.querySelector('.db-machine-source').textContent.includes('fictional-host'));
+  f.document.querySelector('.db-widgets').click();[...f.document.querySelectorAll('.menu .mi')].find(el=>el.textContent.includes('컴퓨터 상태')).click();assert.equal(f.document.querySelector('[data-widget=cpu]').hidden,true);
+  [...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='그래프').click();const before=f.calls.filter(c=>c.name==='pod.dashboard.machine').length;f.emit(snapshot());assert.equal(f.calls.filter(c=>c.name==='pod.dashboard.machine').length,before);
+ }finally{await f.close()}
+});
+
+
+test('개발 결과의 병합 목록은 최근 메모가 100건 넘어도 첫 화면에 나타난다',async()=>{
+ const notes=Array.from({length:110},(_,i)=>({id:'recent-note-'+i,kind:'note',at:Date.now()-i,title:'Recent note',repoId:w.repoId,repo:w.repo,workspaceId:null,sessionKey:null,evidence:'Note',confirmation:null}));
+ notes.push({id:'older-merge',kind:'merge',at:Date.now()-10000,title:'Earlier merged PR',repoId:w.repoId,repo:w.repo,workspaceId:null,sessionKey:null,evidence:'main',confirmation:'observation',pr:{number:9,url:'https://github.com/example/project/pull/9',base:'main',author:'tester',createdAt:Date.now()-3600000}});
+ const f=await fixture('ko',{'mock-dashboard-records':notes});try{
+  [...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='대시보드').click();f.document.querySelector('[data-dashboard-tab=git]').click();
+  await wait(()=>!!f.document.querySelector('[data-record-id="older-merge"]'));assert.equal(f.document.querySelectorAll('.db-record').length,1);assert.equal(f.calls.filter(c=>c.name==='pod.dashboard.month').at(-1).input.kind,'merge');
+ }finally{await f.close()}
+});
+
+
+test('월별 기록을 읽는 동안 메타데이터 갱신은 필터·행·선택 근거를 다시 만들지 않는다',async()=>{
+ const records=[{id:'stable-pr',kind:'merge',at:Date.now(),title:'Stable result',repoId:w.repoId,repo:w.repo,workspaceId:null,sessionKey:null,evidence:'main',confirmation:'observation',pr:{number:9,url:'https://github.com/example/project/pull/9',base:'main',author:'tester',createdAt:Date.now()-100000}}];
+ const f=await fixture('ko',{'mock-dashboard-records':records});try{
+  [...f.document.querySelectorAll('.toolbar [role=tab]')].find(el=>el.textContent==='대시보드').click();f.document.querySelector('[data-dashboard-tab=activity]').click();await wait(()=>!!f.document.querySelector('[data-record-id="stable-pr"]'));
+  const month=f.document.querySelector('.db-month'),row=f.document.querySelector('[data-record-id="stable-pr"]');row.click();const stableRow=f.document.querySelector('[data-record-id="stable-pr"]'),source=f.document.querySelector('.db-record-detail');const next=snapshot();next.workspaces[w.id].agents[0].updatedAt=Date.now();f.emit(next);
+  assert.ok(f.document.querySelector('.db-month')===month);assert.ok(f.document.querySelector('[data-record-id="stable-pr"]')===stableRow);assert.ok(f.document.querySelector('.db-record-detail')===source);
+ }finally{await f.close()}
 });

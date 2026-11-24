@@ -23,6 +23,8 @@ import { WATCH_KEY, emptyWatch, readWatchState, readWatchSettings, watchContext,
 import { WORK_JOURNAL_KEY, readWorkJournal } from './work-memory'
 import { normalize, type Snapshot, type Topic, type TopicSet } from './model'
 import { ProgressRepository } from './progress'
+import { dashboardQuery } from './dashboard'
+import { DashboardSource, MachineSource } from './dashboard-source'
 import { PriorityRepository, priorityChange } from './work-priority'
 
 const CLI_CANDIDATES = [process.env.ORCA_CLI, '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(
@@ -233,6 +235,8 @@ export function mergeSuggested(prev: TopicSet | undefined, fresh: Topic[], assig
 
 export default function activate(orca: any): void {
   const progress=new ProgressRepository(orca.storage)
+  const dashboardSource=new DashboardSource()
+  const machineSource=new MachineSource()
   const priorities=new PriorityRepository(orca.storage)
   let progressError:string|null=null
   let cache: { at: number; snapshot: Snapshot } | null = null
@@ -775,6 +779,15 @@ export default function activate(orca: any): void {
   orca.panels.handle('pod.snapshot', async (input: { fresh?: boolean } | undefined) =>
     snapshot(input?.fresh ? 0 : 1_500)
   )
+  orca.panels.handle('pod.dashboard.month',async(input:unknown)=>{
+    const query=dashboardQuery(input),snap=await snapshot()
+    if(query.repoId&&!snap.repos.some(r=>r.id===query.repoId))throw new CliError('저장소를 찾지 못했습니다')
+    return dashboardSource.month(snap,query,progress)
+  })
+  orca.panels.handle('pod.dashboard.machine',async(input:unknown)=>{
+    if(input!=null&&(typeof input!=='object'||Array.isArray(input)||Object.keys(input).length))throw new CliError('컴퓨터 조회 범위를 확인하세요')
+    return machineSource.sample()
+  })
   orca.panels.handle('pod.progress.view',async(input:unknown)=>({...await progress.view(input),error:progressError}))
   orca.panels.handle('pod.priority.view',()=>priorities.view())
   orca.panels.handle('pod.priority.set',async(input:unknown)=>{
